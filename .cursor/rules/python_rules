@@ -1,0 +1,15 @@
+---
+description: General coding rules for Python
+globs: *.py
+---
+Here are some best practices and rules you must follow:
+
+- Use Python 3.13
+- Use uv for dependency management
+- Follow PEP 8: Adhere to the Python Enhancement Proposal 8 style guide for formatting
+- Keep It Simple: Write simple and clear code; avoid unnecessary complexity
+- Write unit tests only if asked to do so explicitly
+- Use type hints for function parameters and return values
+- Keep function parameters on a single line of code unless the line gets very long
+- Use docstrings only if a function is unintuitive or complex. Docstrings may never be longer than 2 lines.
+

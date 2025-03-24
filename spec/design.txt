@@ -1,0 +1,35 @@
+PaperSort
+
+This program is a python command line tool to sort a large collection of documents and sort them into a hierarchical directory structure. Specifically:
+- The documents to sort are the INBOX
+- The documents are sorted into the DOCSTORE
+- INBOX and DOCSTORE can be local directories, cloud accounts or a mix of both
+- The layour and sort criteria for the docstore are in a file called layout.txt 
+
+They layout contains a hierarchy of document categories. Here is an example:
+
+-------
+
+- Personal & Identification : Important personal documents such as IDs, certificates, licenses, and legal papers.
+   - Birth & Marriage : Birth certificates, marriage certificates, and related documents
+   - Citizenship & Immigration : All citizenship and immigration related documents
+   - IDs & Licenses : Driver's licenses, passports, Social Security cards
+   - Legal : Wills, power of attorney, estate planning documents
+   - Other : Documents that don't fit in above categories
+
+- Financial & Banking : Financial documents, banking records, and insurance policies
+   - Bank Accounts : Bank statements and investment account records
+   - Retirement : 401k, IRA, and pension account documents
+   - Credit : Credit card statements and credit reports
+   - Safe Deposit : Safe deposit box inventory and access records
+   - Insurance : House, car, and liability insurance policies
+      - By company
+   - Other : Documents that don't fit in above categories
+
+-------
+
+There are a few special rules:
+- The term "By year" means there should be a subfolder for each year (e.g. "2023", "2024" etc.)
+- The term "By company" means there should be a subfolder for each company, e.g. ("Chase", "Goldman Sachs", "First Republic")
+- Other is the folder for documents where there is no good match
+

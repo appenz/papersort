@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+
+# Project-specific files
+inbox
+docstore
+
+# Credentials & Settings
+.env
+credentials.json
+token.pickle
+
+

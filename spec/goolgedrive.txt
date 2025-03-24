@@ -1,0 +1,47 @@
+This program can read from and write to Google Drive. This functionality is encapsulated in the class gdrive. Specifically:
+
+1. Authentication and Setup:
+- Uses the Google Python client libraries (google-api-python-client and google-auth-oauthlib)
+- Local credentials should be read from the credentials.json file in the project root
+- Implements OAuth 2.0 authentication flow with proper token management
+
+2. Core Functionality:
+- The gdrive class should be implemented in a dedicated module (e.g., gdrive.py)
+- All methods should include proper type hints and error handling
+- Constructor: __init__(credentials_path: str = "credentials.json") -> None
+  * Takes an optional path to credentials file
+  * Initializes Google Drive client and handles authentication
+
+3. Directory Operations:
+- list_items(path: str) -> List[Dict]: Lists contents of a directory
+  * Returns a list of dictionaries containing item metadata (name, id, type, size)
+  * Handles pagination for large directories
+
+- get_item_by_path(path: str) -> Dict: Retrieves metadata for a specific item
+  * Takes a path string (e.g., "Documents/Taxes/2023")
+  * Returns item metadata or None if not found
+
+- create_folder(path: str, name: str) -> Dict: Creates a new folder
+  * Creates folders recursively if parent folders don't exist
+  * Returns metadata of the created folder
+
+4. File Operations:
+- upload_file(local_path: str, drive_path: str) -> Dict: Uploads a file
+  * Supports large files through chunked upload
+  * Returns metadata of the uploaded file
+
+- download_file(drive_path: str, local_path: str) -> None: Downloads a file
+  * Downloads to specified local path
+
+- delete_item(drive_path: str) -> None: Deletes a file or folder
+  * Supports recursive deletion for folders
+  * Only ever moves to Trash (no permanent deletion)
+
+5. Error Handling:
+- Implements custom exceptions for common error cases
+- Handles rate limiting and quota exceeded scenarios
+
+6. Testing Requirements:
+- Unit tests for all public methods
+- Tests run on the Google Drive account specified /appenz_test and clean up when done
+- Tests only need to work if credentials are present
