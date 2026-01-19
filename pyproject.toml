@@ -3,6 +3,13 @@ name = "papersort"
 version = "0.1.0"
 description = "A tool to sort papers using Google Drive"
 requires-python = ">=3.13"
+dependencies = [
+    "google-api-python-client>=2.165.0",
+    "google-auth>=2.38.0",
+    "google-auth-oauthlib>=1.2.1",
+    "mistralai>=1.6.0",
+    "pytest>=8.3.5",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
