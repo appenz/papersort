@@ -1,59 +1,100 @@
 import os
-from mistralai import Mistral
-from typing import TYPE_CHECKING, Dict
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from .docsorter import DocSorter
 
-def try_sort(doc: "DocSorter") -> None:
-    api_key = os.environ["MISTRAL_API_KEY"]
-    client = Mistral(api_key=api_key)
-    
-    # First upload the document to get a signed URL
-    with open(doc.previous_path, 'rb') as file:
-        upload_response = client.files.upload(
-            file={
-                    "file_name": "uploaded_file.pdf",
-                    "content": file,
-                },
-            purpose="ocr"
-        )
-    
-    #print(upload_response)
-    client.files.retrieve(file_id=upload_response.id)
-    
-    # Get the signed URL for the uploaded document
-    signed_url = client.files.get_signed_url(file_id=upload_response.id)
-    #print(signed_url)
-    
-    prompt = doc.get_static_prompt() + doc.get_layout()
-    prompt += "---\nOne last hint, in a different place this document was filed as: " + doc.previous_path
+MAX_FILE_SIZE_MB = 50
+MAX_PATH_RETRIES = 3
 
-    # Create chat completion with document analysis prompt
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": prompt
-                },
-                {
-                    "type": "document_url",
-                    "document_url": signed_url.url
-                }
-            ]
-        }
-    ]
-    
-    chat_response = client.chat.complete(
-        model="mistral-small-latest",
-        messages=messages
-    )
-    
-    return chat_response.choices[0].message.content
 
-def result_to_dict(result: str) -> Dict[str, str]:
+class LLMBase(ABC):
+    """Abstract base class for LLM providers."""
+    
+    @abstractmethod
+    def build_messages(self, doc: "DocSorter") -> List[Dict]:
+        """Build the initial messages for the LLM request.
+        
+        Args:
+            doc: The DocSorter instance containing the document to analyze.
+            
+        Returns:
+            List of message dictionaries for the LLM API.
+        """
+        pass
+    
+    @abstractmethod
+    def complete(self, messages: List[Dict]) -> Tuple[str, List[Dict]]:
+        """Send messages to LLM and return response with updated messages.
+        
+        Args:
+            messages: The conversation messages to send.
+            
+        Returns:
+            Tuple of (response_text, updated_messages) where updated_messages
+            includes the assistant's response appended.
+        """
+        pass
+    
+    def check_file_size(self, path: str) -> None:
+        """Validate file size is under the limit.
+        
+        Args:
+            path: Path to the file to check.
+            
+        Raises:
+            ValueError: If the file exceeds the size limit.
+        """
+        file_size = os.path.getsize(path)
+        if file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+            raise ValueError(
+                f"PDF exceeds {MAX_FILE_SIZE_MB}MB limit "
+                f"({file_size / 1024 / 1024:.1f}MB)"
+            )
+    
+    def sort(self, doc: "DocSorter") -> None:
+        """Analyzes document and populates metadata fields.
+        
+        Args:
+            doc: The DocSorter instance to populate with metadata.
+        """
+        from .docsorter import DocSorter
+        
+        self.check_file_size(doc.previous_path)
+        
+        messages = self.build_messages(doc)
+        
+        for attempt in range(MAX_PATH_RETRIES):
+            result, messages = self.complete(messages)
+            result_dict = result_to_dict(result)
+            
+            if result_dict is None:
+                print("Error: LLM did not return a valid result.")
+                return
+            
+            # Check if the suggested path is valid
+            if DocSorter.path_exists(result_dict['SUGGESTED_PATH']):
+                doc.title = result_dict['TITLE']
+                doc.suggested_path = result_dict['SUGGESTED_PATH']
+                doc.confidence = result_dict['CONFIDENCE']
+                doc.year = result_dict['YEAR']
+                doc.date = result_dict['DATE']
+                doc.entity = result_dict['ENTITY']
+                doc.summary = result_dict['SUMMARY']
+                return
+            
+            # Path invalid - append correction message and retry
+            print(f"Invalid path '{result_dict['SUGGESTED_PATH']}', asking LLM to retry ({attempt + 1}/{MAX_PATH_RETRIES})...")
+            messages.append({
+                "role": "user",
+                "content": "This is incorrect, the path that you suggested is not valid. Try again."
+            })
+        
+        print(f"Failed to get valid path after {MAX_PATH_RETRIES} attempts.")
+
+
+def result_to_dict(result: str) -> Optional[Dict[str, str]]:
     """Converts the LLM response into a dictionary of metadata fields.
     
     Expected format:
@@ -64,6 +105,12 @@ def result_to_dict(result: str) -> Dict[str, str]:
     DATE: <date>
     ENTITY: <entity>
     SUMMARY: <summary>
+    
+    Args:
+        result: The raw text response from the LLM.
+        
+    Returns:
+        A dictionary of metadata fields, or None if parsing failed.
     """
     result_dict = {}
     
@@ -84,7 +131,7 @@ def result_to_dict(result: str) -> Dict[str, str]:
         value = parts[1].strip()
         
         # Store in dictionary if it's one of our expected fields
-        if key in ['TITLE', 'SUGGESTED_PATH', 'CONFIDENCE', 'YEAR', 'DATE', 'ENTITY', 'SUMMARY', ]:
+        if key in ['TITLE', 'SUGGESTED_PATH', 'CONFIDENCE', 'YEAR', 'DATE', 'ENTITY', 'SUMMARY']:
             result_dict[key] = value
     
     if len(result_dict) != 7:
@@ -94,20 +141,3 @@ def result_to_dict(result: str) -> Dict[str, str]:
         return None
 
     return result_dict
-
-def sort(doc: "DocSorter") -> None:
-    """Analyzes document and populates metadata fields"""
-    
-    result = try_sort(doc)
-    result_dict = result_to_dict(result)
-    if result_dict is None:
-        print("Error: LLM did not return a valid result.")
-        return
-
-    doc.title = result_dict['TITLE']
-    doc.suggested_path = result_dict['SUGGESTED_PATH']
-    doc.confidence = result_dict['CONFIDENCE']
-    doc.year = result_dict['YEAR']
-    doc.date = result_dict['DATE']
-    doc.entity = result_dict['ENTITY']
-    doc.summary = result_dict['SUMMARY']

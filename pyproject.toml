@@ -8,6 +8,7 @@ dependencies = [
     "google-auth>=2.38.0",
     "google-auth-oauthlib>=1.2.1",
     "mistralai>=1.6.0",
+    "openai>=1.100.0",
     "pytest>=8.3.5",
 ]
 

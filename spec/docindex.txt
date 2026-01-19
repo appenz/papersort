@@ -1,0 +1,32 @@
+DocIndex - SQLite Metadata Store
+
+Purpose: Cache LLM-extracted document metadata to avoid reprocessing identical files.
+
+Location: ~/Library/Application Support/papersort/metadata.db
+
+Schema:
+  documents (
+    sha256 TEXT PRIMARY KEY,   -- File content hash (lookup key)
+    path TEXT,                 -- Last known file path
+    title TEXT,                -- Document title from LLM
+    suggested_path TEXT,       -- Target path in docstore
+    confidence INTEGER,        -- LLM confidence score (0-100)
+    year INTEGER,              -- Document/tax year
+    date TEXT,                 -- Document date (YYYY-MM format)
+    entity TEXT,               -- Company/person name
+    summary TEXT               -- Brief description
+  )
+  Index: idx_documents_path ON path
+
+Operations:
+  - insert(sha256, path, metadata) - Upsert document record
+  - get_by_hash(sha256) - Primary lookup
+  - get_by_path(path) - Secondary lookup
+  - exists(sha256) - Quick existence check
+
+Helper: compute_sha256(file_path) - Hash file contents
+
+Behavior:
+  - Creates DB directory if missing
+  - Uses INSERT OR REPLACE for idempotent writes
+  - Returns dict or None for lookups

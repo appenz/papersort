@@ -1,8 +1,11 @@
 import os
 from pathlib import Path
-from typing import Dict, Optional, List, Union
+from typing import Dict, Optional, List, Union, TYPE_CHECKING
 from datetime import date
-from .docllm import sort as docllm_sort
+from .docindex import compute_sha256
+
+if TYPE_CHECKING:
+    from .docindex import DocIndex
 
 class DocSorter:
     _layout_tree: Optional[Dict[str, Union[Dict[str, Dict], Dict[str, str]]]] = None
@@ -30,6 +33,8 @@ Some specific guidelines:
 - Summary is a short summary of the document, not more than 100 words.
 - Suggested path is the most important part of the output. It is where the document should be filed.
 
+MOST IMPORTANT: Make sure the suggested path is a valid path in the layout below! Do not invent paths that are not in the layout.
+
 The layout description for the document store follow after this line.
 --- 
 """
@@ -52,11 +57,14 @@ The layout description for the document store follow after this line.
         self.previous_path = file_path
         self.file_name = os.path.basename(file_path)
         self.file_ext = file_ext
+        self.sha256 = compute_sha256(file_path)
         
         self.title: Optional[str] = None
         self.year: Optional[int] = None
+        self.date: Optional[str] = None
         self.entity: Optional[str] = None
         self.suggested_path: Optional[str] = None
+        self.confidence: Optional[int] = None
         self.summary: Optional[str] = None
         
         if DocSorter._layout_tree is None:
@@ -156,15 +164,22 @@ The layout description for the document store follow after this line.
 
     @classmethod
     def path_exists(cls, path: str) -> bool:
-        """Checks if a path exists in the layout, treating it like a filesystem.
+        """Checks if a path is a valid leaf directory in the layout.
+        
+        A valid path must:
+        1. Exist in the layout tree
+        2. Be a leaf directory (no child folders, only _description)
+        
         Special handling for:
-        - "By year" folders - any 4-digit year number is valid
-        - "By company" folders - any name is valid"""
+        - "By year" folders - any 4-digit year number is valid as a leaf
+        - "By company" folders - any name is valid as a leaf
+        """
         if not path:
             return False
             
         parts = [p for p in path.split('/') if p]
         current = cls._get_layout()
+        used_dynamic_folder = False
         
         for part in parts:
             if part not in current:
@@ -172,22 +187,35 @@ The layout description for the document store follow after this line.
                 if any(key.lower() == "by year" for key in current.keys()):
                     # Any year number is valid
                     if part.isdigit() and len(part) == 4:  # Basic year validation
+                        used_dynamic_folder = True
                         current = {"_description": ""}  # Continue traversal
                         continue
                 elif any(key.lower() == "by company" for key in current.keys()):
                     # Any name is valid for company folders
+                    used_dynamic_folder = True
                     current = {"_description": ""}  # Continue traversal
                     continue
-                print(f"Path component '{part}' not found in {current}")
+                print(f"Path component '{part}' not found in layout")
                 return False
             current = current[part]
+        
+        # If we used a dynamic folder (By year/By company), it's always a leaf
+        if used_dynamic_folder:
+            return True
+        
+        # Check that this is a leaf directory (only has _description, no child folders)
+        child_folders = [k for k in current.keys() if k != "_description"]
+        if child_folders:
+            print(f"Path '{path}' is not a leaf directory, has children: {child_folders}")
+            return False
             
         return True
 
-    def print_layout(self, tree: Optional[Dict] = None, level: int = 0) -> None:
+    @classmethod
+    def print_layout(cls, tree: Optional[Dict] = None, level: int = 0) -> None:
         """Prints the layout tree with proper indentation."""
         if tree is None:
-            tree = self._layout_tree
+            tree = cls._get_layout()
             
         indent = "  " * level
         for folder, content in sorted(tree.items()):
@@ -200,7 +228,7 @@ The layout description for the document store follow after this line.
             
             # Recurse if the dictionary has more keys than just _description
             if isinstance(content, dict) and len(content) > 1:
-                self.print_layout(content, level + 1)
+                cls.print_layout(content, level + 1)
 
     def __str__(self) -> str:
         """Returns a string representation of the DocSorter object."""
@@ -220,12 +248,35 @@ The layout description for the document store follow after this line.
             
         return "\n".join(parts)
 
-    def sort(self) -> None:
-        """Analyzes document and populates metadata fields"""
-        docllm_sort(self) 
+    def sort(self, llm_provider: str = "mistral") -> None:
+        """Analyzes document and populates metadata fields.
+        
+        Args:
+            llm_provider: The LLM provider to use ("mistral" or "openai").
+        """
+        if llm_provider == "openai":
+            from .llm_openai import OpenAILLM
+            llm = OpenAILLM()
+        else:
+            from .llm_mistral import MistralLLM
+            llm = MistralLLM()
+        llm.sort(self) 
 
     def get_static_prompt(self) -> str:
        return DocSorter.static_prompt 
     
     def get_layout(self) -> str:
         return DocSorter.layout
+    
+    def save_to_db(self, db: "DocIndex", path: Optional[str] = None) -> None:
+        """Save document metadata to the database."""
+        metadata = {
+            'title': self.title,
+            'suggested_path': self.suggested_path,
+            'confidence': self.confidence,
+            'year': self.year,
+            'date': self.date,
+            'entity': self.entity,
+            'summary': self.summary
+        }
+        db.insert(self.sha256, path, metadata)
