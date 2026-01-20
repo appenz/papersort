@@ -1,10 +1,13 @@
-.PHONY: run clean showlayout test
+.PHONY: run clean showlayout test dedup
 
 run:
 	uv run papersort.py
 
 showlayout:
 	uv run papersort.py --showlayout
+
+dedup:
+	uv run papersort.py --deduplicate
 
 test:
 	uv run pytest tests/ -v

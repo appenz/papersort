@@ -1,12 +1,159 @@
 from typing import Dict, List, Optional, Tuple
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import io
 import os
 import tempfile
 
+from utils.retry import (
+    retry_on_transient_error,
+    is_transient_network_error,
+    TRANSIENT_HTTP_STATUS_CODES,
+)
+
 SCOPES = ['https://www.googleapis.com/auth/drive']
+
+
+# ---------------------------------------------------------------------------
+# Google Drive Retry Configuration
+# ---------------------------------------------------------------------------
+# Google's APIs can fail with transient errors. This section configures
+# automatic retry behavior specific to Google Drive.
+
+def _is_retryable_gdrive_error(exc: Exception) -> bool:
+    """
+    Determine if a Google Drive API error should be retried.
+    
+    We retry on:
+    - HTTP 429 (rate limited by Google)
+    - HTTP 5xx (Google's servers having issues)
+    - Network errors (connection reset, timeout, etc.)
+    
+    We do NOT retry on:
+    - HTTP 4xx (except 429): These are client errors like "not found" or
+      "permission denied" that won't be fixed by retrying
+    - Other exceptions: Programming errors, invalid arguments, etc.
+    
+    Args:
+        exc: The exception raised by the API call
+        
+    Returns:
+        True if this is a transient error worth retrying
+    """
+    # Check for Google API HTTP errors
+    if isinstance(exc, HttpError):
+        # HttpError has a resp attribute with the HTTP status code
+        status_code = exc.resp.status
+        return status_code in TRANSIENT_HTTP_STATUS_CODES
+    
+    # Check for general network errors (connection reset, timeout, etc.)
+    return is_transient_network_error(exc)
+
+
+def _log_retry(exc: Exception, attempt: int, delay: float) -> None:
+    """
+    Log when a retry is about to happen.
+    
+    This helps with debugging transient failures - you can see in the output
+    that retries are happening rather than silent failures.
+    
+    Args:
+        exc: The exception that caused the retry
+        attempt: Which attempt just failed (1 = first attempt)
+        delay: How many seconds we'll wait before retrying
+    """
+    # Extract a short description of the error
+    if isinstance(exc, HttpError):
+        error_desc = f"HTTP {exc.resp.status}"
+    else:
+        error_desc = type(exc).__name__
+    
+    print(f"  [Retry] {error_desc} on attempt {attempt}, retrying in {delay:.1f}s...")
+
+
+def _execute_with_retry(request):
+    """
+    Execute a Google Drive API request with automatic retry on transient errors.
+    
+    This is the core helper that wraps all Google Drive API calls. Instead of
+    calling request.execute() directly (which fails immediately on errors),
+    we wrap it with exponential backoff retry logic.
+    
+    Args:
+        request: A Google API request object (from files().list(), files().get(), etc.)
+        
+    Returns:
+        The API response (same as request.execute() would return)
+        
+    Raises:
+        HttpError: If a non-retryable HTTP error occurs, or all retries exhausted
+        GDriveError: Wrapped in calling code for consistent error handling
+        
+    Example:
+        # Instead of:
+        result = self.service.files().list(q=query).execute()
+        
+        # We do:
+        result = _execute_with_retry(self.service.files().list(q=query))
+    """
+    # Create a retry-wrapped version of the execute method
+    # We use the decorator as a function here rather than with @ syntax
+    @retry_on_transient_error(
+        is_retryable=_is_retryable_gdrive_error,
+        max_retries=5,        # Try up to 6 times total
+        base_delay=1.0,       # Start with 1 second delay
+        max_delay=60.0,       # Never wait more than 60 seconds
+        on_retry=_log_retry,  # Log each retry attempt
+    )
+    def execute():
+        return request.execute()
+    
+    return execute()
+
+
+def _download_with_retry(request, destination):
+    """
+    Download a file from Google Drive with automatic retry on transient errors.
+    
+    Google Drive downloads work differently from regular API calls - they use
+    MediaIoBaseDownload which fetches the file in chunks. Each chunk fetch can
+    fail with transient errors, so we need retry logic here too.
+    
+    This function handles the entire download process, retrying individual chunks
+    if they fail, and restarting the download if necessary.
+    
+    Args:
+        request: A get_media request object from service.files().get_media()
+        destination: A file-like object to write the downloaded content to.
+                    Must support write() and seek(). Can be a file opened in 'wb'
+                    mode or a BytesIO buffer.
+        
+    Raises:
+        HttpError: If a non-retryable HTTP error occurs, or all retries exhausted
+        
+    Example:
+        request = self.service.files().get_media(fileId=file_id)
+        with open(local_path, 'wb') as f:
+            _download_with_retry(request, f)
+    """
+    downloader = MediaIoBaseDownload(destination, request)
+    done = False
+    
+    while not done:
+        # Wrap each chunk download with retry logic
+        @retry_on_transient_error(
+            is_retryable=_is_retryable_gdrive_error,
+            max_retries=5,
+            base_delay=1.0,
+            max_delay=60.0,
+            on_retry=_log_retry,
+        )
+        def download_next_chunk():
+            return downloader.next_chunk()
+        
+        status, done = download_next_chunk()
 
 
 def _escape_query_value(value: str) -> str:
@@ -76,11 +223,11 @@ class GDrive:
         """
         try:
             # Verify the folder exists and we have access
-            result = self.service.files().get(
+            result = _execute_with_retry(self.service.files().get(
                 fileId=folder_id,
                 fields="id, name",
                 supportsAllDrives=True,
-            ).execute()
+            ))
             
             self.root_folder_id = result['id']
             self.root_folder = result
@@ -107,12 +254,12 @@ class GDrive:
         
         for part in parts:
             escaped_part = _escape_query_value(part)
-            results = self.service.files().list(
+            results = _execute_with_retry(self.service.files().list(
                 q=f"name='{escaped_part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
                 fields="files(id, name)",
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
-            ).execute()
+            ))
             
             items = results.get('files', [])
             if not items:
@@ -132,12 +279,12 @@ class GDrive:
             for part in parts:
                 # Search for existing folder
                 escaped_part = _escape_query_value(part)
-                results = self.service.files().list(
+                results = _execute_with_retry(self.service.files().list(
                     q=f"name='{escaped_part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
                     fields="files(id, name)",
                     supportsAllDrives=True,
                     includeItemsFromAllDrives=True,
-                ).execute()
+                ))
                 
                 items = results.get('files', [])
                 
@@ -150,21 +297,21 @@ class GDrive:
                         'mimeType': 'application/vnd.google-apps.folder',
                         'parents': [current_parent]
                     }
-                    folder = self.service.files().create(
+                    folder = _execute_with_retry(self.service.files().create(
                         body=file_metadata,
                         fields='id, name',
                         supportsAllDrives=True,
-                    ).execute()
+                    ))
                     current_parent = folder['id']
             
             # Check if the final folder already exists
             escaped_name = _escape_query_value(name)
-            results = self.service.files().list(
+            results = _execute_with_retry(self.service.files().list(
                 q=f"name='{escaped_name}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
                 fields="files(id, name)",
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
-            ).execute()
+            ))
             
             items = results.get('files', [])
             if items:
@@ -176,11 +323,11 @@ class GDrive:
                 'mimeType': 'application/vnd.google-apps.folder',
                 'parents': [current_parent]
             }
-            return self.service.files().create(
+            return _execute_with_retry(self.service.files().create(
                 body=file_metadata,
                 fields='id, name',
                 supportsAllDrives=True,
-            ).execute()
+            ))
             
         except Exception as e:
             raise GDriveError(f"Failed to create folder: {str(e)}")
@@ -194,14 +341,14 @@ class GDrive:
             page_token = None
             
             while True:
-                results = self.service.files().list(
+                results = _execute_with_retry(self.service.files().list(
                     q=f"'{folder_id}' in parents and trashed=false",
                     pageSize=100,
                     fields="nextPageToken, files(id, name, mimeType, size, modifiedTime)",
                     pageToken=page_token,
                     supportsAllDrives=True,
                     includeItemsFromAllDrives=True,
-                ).execute()
+                ))
                 
                 all_files.extend(results.get('files', []))
                 page_token = results.get('nextPageToken')
@@ -238,12 +385,12 @@ class GDrive:
                 else:
                     q = f"name='{escaped_part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false"
                 
-                results = self.service.files().list(
+                results = _execute_with_retry(self.service.files().list(
                     q=q,
                     fields="files(id, name, mimeType, size, modifiedTime)",
                     supportsAllDrives=True,
                     includeItemsFromAllDrives=True,
-                ).execute()
+                ))
                 
                 items = results.get('files', [])
                 if not items:
@@ -291,12 +438,12 @@ class GDrive:
                 
                 for part in folder_parts:
                     escaped_part = _escape_query_value(part)
-                    results = self.service.files().list(
+                    results = _execute_with_retry(self.service.files().list(
                         q=f"name='{escaped_part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
                         fields="files(id, name)",
                         supportsAllDrives=True,
                         includeItemsFromAllDrives=True,
-                    ).execute()
+                    ))
                     
                     items = results.get('files', [])
                     if items:
@@ -308,11 +455,11 @@ class GDrive:
                             'mimeType': 'application/vnd.google-apps.folder',
                             'parents': [current_parent]
                         }
-                        folder = self.service.files().create(
+                        folder = _execute_with_retry(self.service.files().create(
                             body=file_metadata,
                             fields='id, name',
                             supportsAllDrives=True,
-                        ).execute()
+                        ))
                         current_parent = folder['id']
                 
                 parent_id = current_parent
@@ -321,12 +468,12 @@ class GDrive:
             
             # Check if file already exists (to update instead of create duplicate)
             escaped_filename = _escape_query_value(filename)
-            results = self.service.files().list(
+            results = _execute_with_retry(self.service.files().list(
                 q=f"name='{escaped_filename}' and '{parent_id}' in parents and trashed=false",
                 fields="files(id, name)",
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
-            ).execute()
+            ))
             
             existing_files = results.get('files', [])
             
@@ -336,24 +483,24 @@ class GDrive:
             if existing_files:
                 # Update existing file
                 file_id = existing_files[0]['id']
-                return self.service.files().update(
+                return _execute_with_retry(self.service.files().update(
                     fileId=file_id,
                     media_body=media,
                     fields='id, name, mimeType, size, modifiedTime',
                     supportsAllDrives=True,
-                ).execute()
+                ))
             else:
                 # Create new file
                 file_metadata = {
                     'name': filename,
                     'parents': [parent_id]
                 }
-                return self.service.files().create(
+                return _execute_with_retry(self.service.files().create(
                     body=file_metadata,
                     media_body=media,
                     fields='id, name, mimeType, size, modifiedTime',
                     supportsAllDrives=True,
-                ).execute()
+                ))
             
         except Exception as e:
             raise GDriveError(f"Failed to upload file: {str(e)}")
@@ -376,10 +523,7 @@ class GDrive:
                 os.makedirs(local_dir, exist_ok=True)
             
             with open(local_path, 'wb') as f:
-                downloader = MediaIoBaseDownload(f, request)
-                done = False
-                while not done:
-                    status, done = downloader.next_chunk()
+                _download_with_retry(request, f)
             
         except GDriveError:
             raise
@@ -394,16 +538,65 @@ class GDrive:
                 raise GDriveError(f"Item not found: {drive_path}")
             
             # Move to trash (not permanent delete)
-            self.service.files().update(
+            _execute_with_retry(self.service.files().update(
                 fileId=item['id'],
                 body={'trashed': True},
                 supportsAllDrives=True,
-            ).execute()
+            ))
             
         except GDriveError:
             raise
         except Exception as e:
             raise GDriveError(f"Failed to delete item: {str(e)}")
+
+    def move_file(self, source_path: str, dest_folder_path: str) -> Dict:
+        """Move a file to a different folder.
+        
+        Args:
+            source_path: Path to the file to move (e.g., "Insurance/Chase/doc.pdf")
+            dest_folder_path: Path to the destination folder (e.g., "Insurance/Chase Bank")
+            
+        Returns:
+            Updated file metadata
+            
+        Raises:
+            GDriveError: If file not found or move fails
+        """
+        try:
+            # Get the source file
+            source_item = self.get_item_by_path(source_path)
+            if not source_item:
+                raise GDriveError(f"Source file not found: {source_path}")
+            
+            if source_item.get('mimeType') == 'application/vnd.google-apps.folder':
+                raise GDriveError(f"Cannot move a folder with this method: {source_path}")
+            
+            # Get current parent folder ID
+            source_parts = [p for p in source_path.split('/') if p]
+            if len(source_parts) > 1:
+                source_folder_path = '/'.join(source_parts[:-1])
+                old_parent_id = self._get_folder_id(source_folder_path)
+            else:
+                old_parent_id = self.root_folder_id
+            
+            # Get destination folder ID
+            new_parent_id = self._get_folder_id(dest_folder_path)
+            
+            # Move the file by updating its parents
+            result = _execute_with_retry(self.service.files().update(
+                fileId=source_item['id'],
+                addParents=new_parent_id,
+                removeParents=old_parent_id,
+                fields='id, name, mimeType, size, modifiedTime',
+                supportsAllDrives=True,
+            ))
+            
+            return result
+            
+        except GDriveError:
+            raise
+        except Exception as e:
+            raise GDriveError(f"Failed to move file: {str(e)}")
 
     def read_file_content(self, drive_path: str) -> str:
         """Reads the content of a text file from Google Drive and returns it as a string."""
@@ -418,11 +611,7 @@ class GDrive:
             request = self.service.files().get_media(fileId=item['id'])
             
             buffer = io.BytesIO()
-            downloader = MediaIoBaseDownload(buffer, request)
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
-            
+            _download_with_retry(request, buffer)
             buffer.seek(0)
             return buffer.read().decode('utf-8')
             
@@ -458,14 +647,14 @@ class GDrive:
             try:
                 page_token = None
                 while True:
-                    response = self.service.files().list(
+                    response = _execute_with_retry(self.service.files().list(
                         q=f"'{current_folder_id}' in parents and trashed=false",
                         pageSize=100,
                         fields="nextPageToken, files(id, name, mimeType)",
                         pageToken=page_token,
                         supportsAllDrives=True,
                         includeItemsFromAllDrives=True,
-                    ).execute()
+                    ))
                     
                     for item in response.get('files', []):
                         item_path = f"{current_path}/{item['name']}" if current_path else item['name']
@@ -508,11 +697,11 @@ class GDrive:
         try:
             # Get file metadata if filename not provided
             if not filename:
-                file_meta = self.service.files().get(
+                file_meta = _execute_with_retry(self.service.files().get(
                     fileId=file_id,
                     fields="name",
                     supportsAllDrives=True,
-                ).execute()
+                ))
                 filename = file_meta['name']
             
             # Create temp file with appropriate extension
@@ -524,10 +713,7 @@ class GDrive:
             request = self.service.files().get_media(fileId=file_id)
             
             with open(temp_path, 'wb') as f:
-                downloader = MediaIoBaseDownload(f, request)
-                done = False
-                while not done:
-                    status, done = downloader.next_chunk()
+                _download_with_retry(request, f)
             
             return temp_path
             

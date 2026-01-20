@@ -221,6 +221,35 @@ The layout description for the document store follow after this line.
         return True
 
     @classmethod
+    def get_by_company_paths(cls) -> List[str]:
+        """Find all paths in the layout that have 'By company' subfolders.
+        
+        Traverses the layout tree and returns the parent path for each location
+        where a 'By company' folder marker exists. These are the paths where
+        company subfolders are created dynamically.
+        
+        Returns:
+            List of paths (e.g., ["Financial & Banking/Insurance"]) where
+            'By company' subfolders exist.
+        """
+        paths: List[str] = []
+        
+        def _traverse(node: Dict, current_path: str) -> None:
+            for key, value in node.items():
+                if key == "_description":
+                    continue
+                if key.lower() == "by company":
+                    # Found a 'By company' marker - record the parent path
+                    paths.append(current_path)
+                elif isinstance(value, dict):
+                    # Recurse deeper into the tree
+                    new_path = f"{current_path}/{key}" if current_path else key
+                    _traverse(value, new_path)
+        
+        _traverse(cls._get_layout(), "")
+        return paths
+
+    @classmethod
     def print_layout(cls, tree: Optional[Dict] = None, level: int = 0) -> None:
         """Prints the layout tree with proper indentation."""
         if tree is None:

@@ -1,11 +1,12 @@
 from docsorter.docsorter import DocSorter
 from docsorter.docindex import DocIndex, compute_sha256
+from docsorter.docllm import find_duplicate_pair
 from gdrive.gdrive import GDrive, parse_storage_uri
 import argparse
 import os
 import re
 import shutil
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 # Global GDrive instance for inbox operations (if using gdrive inbox)
 _inbox_drive = None
@@ -465,6 +466,220 @@ def main(copy=False, verify=False):
     db.close()
 
 
+def list_subfolders(path: str, docstore_drive: Optional[GDrive], 
+                    docstore_local_path: Optional[str]) -> List[str]:
+    """List subfolder names at a given path in the docstore.
+    
+    Args:
+        path: Path within docstore to list
+        docstore_drive: GDrive instance if docstore is on GDrive, None otherwise
+        docstore_local_path: Local path to docstore if local, None otherwise
+        
+    Returns:
+        List of subfolder names (not full paths)
+    """
+    if docstore_drive:
+        items = docstore_drive.list_items(path)
+        # Filter to only folders
+        return [item['name'] for item in items 
+                if item.get('mimeType') == 'application/vnd.google-apps.folder']
+    else:
+        full_path = os.path.join(docstore_local_path, path)
+        if not os.path.exists(full_path):
+            return []
+        return [name for name in os.listdir(full_path) 
+                if os.path.isdir(os.path.join(full_path, name))]
+
+
+def list_files_in_folder(path: str, docstore_drive: Optional[GDrive],
+                         docstore_local_path: Optional[str]) -> List[dict]:
+    """List files in a folder.
+    
+    Args:
+        path: Path within docstore
+        docstore_drive: GDrive instance if docstore is on GDrive, None otherwise
+        docstore_local_path: Local path to docstore if local, None otherwise
+        
+    Returns:
+        List of dicts with 'name' key (and 'id' for GDrive)
+    """
+    if docstore_drive:
+        items = docstore_drive.list_items(path)
+        # Filter to only files (not folders)
+        return [{'name': item['name'], 'id': item['id']} for item in items 
+                if item.get('mimeType') != 'application/vnd.google-apps.folder']
+    else:
+        full_path = os.path.join(docstore_local_path, path)
+        if not os.path.exists(full_path):
+            return []
+        return [{'name': name} for name in os.listdir(full_path) 
+                if os.path.isfile(os.path.join(full_path, name))]
+
+
+def merge_folders(source_folder: str, dest_folder: str, parent_path: str,
+                  docstore_drive: Optional[GDrive], 
+                  docstore_local_path: Optional[str]) -> bool:
+    """Merge two folders by moving all files from source to destination.
+    
+    Moves all files from source_folder to dest_folder, then deletes the
+    now-empty source_folder.
+    
+    Args:
+        source_folder: Name of the source folder (to be emptied and deleted)
+        dest_folder: Name of the destination folder (receives files)
+        parent_path: Parent path containing both folders
+        docstore_drive: GDrive instance if docstore is on GDrive, None otherwise
+        docstore_local_path: Local path to docstore if local, None otherwise
+        
+    Returns:
+        True if merge succeeded, False otherwise
+    """
+    source_path = f"{parent_path}/{source_folder}"
+    dest_path = f"{parent_path}/{dest_folder}"
+    
+    try:
+        # Get list of files in source folder
+        files = list_files_in_folder(source_path, docstore_drive, docstore_local_path)
+        
+        if not files:
+            print(f"  No files to move from '{source_folder}'")
+        else:
+            print(f"  Moving {len(files)} file(s) from '{source_folder}' to '{dest_folder}'...")
+        
+        if docstore_drive:
+            # Google Drive: use move_file for each file
+            for file_info in files:
+                file_path = f"{source_path}/{file_info['name']}"
+                docstore_drive.move_file(file_path, dest_path)
+                print(f"    Moved: {file_info['name']}")
+            
+            # Delete the empty source folder
+            docstore_drive.delete_item(source_path)
+            print(f"  Deleted empty folder: {source_folder}")
+            
+        else:
+            # Local filesystem
+            source_full = os.path.join(docstore_local_path, source_path)
+            dest_full = os.path.join(docstore_local_path, dest_path)
+            
+            for file_info in files:
+                src_file = os.path.join(source_full, file_info['name'])
+                dst_file = os.path.join(dest_full, file_info['name'])
+                
+                # Handle potential name collision
+                if os.path.exists(dst_file):
+                    # Add a suffix to avoid overwriting
+                    base, ext = os.path.splitext(file_info['name'])
+                    counter = 1
+                    while os.path.exists(dst_file):
+                        dst_file = os.path.join(dest_full, f"{base}_{counter}{ext}")
+                        counter += 1
+                    print(f"    Moved (renamed): {file_info['name']} -> {os.path.basename(dst_file)}")
+                else:
+                    print(f"    Moved: {file_info['name']}")
+                
+                shutil.move(src_file, dst_file)
+            
+            # Remove the empty source folder
+            os.rmdir(source_full)
+            print(f"  Deleted empty folder: {source_folder}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"  Error merging folders: {str(e)}")
+        return False
+
+
+def deduplicate_company_folders(docstore_drive: Optional[GDrive],
+                                docstore_local_path: Optional[str],
+                                llm_provider: str) -> None:
+    """Find and merge duplicate company folders in the docstore.
+    
+    Iterates through all 'By company' folder locations in the layout,
+    uses LLM to detect potential duplicates, and merges them with user
+    confirmation.
+    
+    Args:
+        docstore_drive: GDrive instance if docstore is on GDrive, None otherwise
+        docstore_local_path: Local path to docstore if local, None otherwise
+        llm_provider: LLM provider to use ("mistral" or "openai")
+    """
+    # Get all paths that have 'By company' subfolders
+    by_company_paths = DocSorter.get_by_company_paths()
+    
+    if not by_company_paths:
+        print("No 'By company' folders found in layout")
+        return
+    
+    print(f"Found {len(by_company_paths)} location(s) with company folders")
+    
+    total_merged = 0
+    
+    for parent_path in by_company_paths:
+        print(f"\n=== Checking: {parent_path} ===")
+        
+        # Keep checking this folder until no more duplicates found
+        while True:
+            # Get current list of company subfolders
+            subfolders = list_subfolders(parent_path, docstore_drive, docstore_local_path)
+            
+            if len(subfolders) < 2:
+                print(f"  Only {len(subfolders)} folder(s), skipping")
+                break
+            
+            print(f"  Found {len(subfolders)} company folders")
+            
+            # Ask LLM to find a duplicate pair
+            print("  Checking for duplicates...")
+            duplicate_pair = find_duplicate_pair(subfolders, llm_provider)
+            
+            if duplicate_pair is None:
+                print("  No duplicates found")
+                break
+            
+            folder1, folder2 = duplicate_pair
+            
+            # Count files in each folder to determine which to keep
+            files1 = list_files_in_folder(f"{parent_path}/{folder1}", 
+                                         docstore_drive, docstore_local_path)
+            files2 = list_files_in_folder(f"{parent_path}/{folder2}", 
+                                         docstore_drive, docstore_local_path)
+            
+            # Keep the folder with more files (or folder1 if equal)
+            if len(files2) > len(files1):
+                source, dest = folder1, folder2
+                source_count, dest_count = len(files1), len(files2)
+            else:
+                source, dest = folder2, folder1
+                source_count, dest_count = len(files2), len(files1)
+            
+            print(f"\n  Potential duplicate found:")
+            print(f"    '{source}' ({source_count} files) -> '{dest}' ({dest_count} files)")
+            
+            # Ask for user confirmation
+            response = input("  Merge these folders? [y/n]: ").strip().lower()
+            
+            if response == 'y':
+                if merge_folders(source, dest, parent_path, 
+                               docstore_drive, docstore_local_path):
+                    total_merged += 1
+                    print(f"  Merged successfully!")
+                else:
+                    print(f"  Merge failed, skipping")
+                    break
+            else:
+                print("  Skipped")
+                # Continue checking for other duplicates (the skipped pair will
+                # still be in the list, so we need to continue to next iteration
+                # but the LLM might return the same pair. For now, we break.
+                # A more sophisticated approach would track skipped pairs.
+                break
+    
+    print(f"\n=== Deduplication complete ===")
+    print(f"Total folders merged: {total_merged}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Document sorting utility")
     parser.add_argument("--showlayout", action="store_true", help="Print the document store layout")
@@ -472,12 +687,30 @@ if __name__ == "__main__":
     parser.add_argument("--update", action="store_true", help="Skip cache, reprocess and compare paths")
     parser.add_argument("--copy", action="store_true", help="Copy files to docstore after processing")
     parser.add_argument("--verify", action="store_true", help="Verify files exist at destination (use with --copy)")
+    parser.add_argument("--deduplicate", action="store_true", 
+                       help="Find and merge duplicate company folders in the docstore")
     args = parser.parse_args()
 
     # Get docstore from environment
     docstore_uri = os.environ.get('DOCSTORE')
     
-    if args.showlayout:
+    if args.deduplicate:
+        if not docstore_uri:
+            print("Error: DOCSTORE environment variable not set")
+            print("Example: DOCSTORE=gdrive:abc123 or DOCSTORE=local:docstore")
+        else:
+            docstore_drive, docstore_name = load_layout(docstore_uri)
+            docstore_type, docstore_value = parse_storage_uri(docstore_uri)
+            docstore_local_path = docstore_value if docstore_type == "local" else None
+            
+            llm_provider = os.environ.get('LLM_PROVIDER', 'mistral')
+            
+            print(f"Docstore: {docstore_name}")
+            print(f"Using LLM provider: {llm_provider}")
+            print("Starting deduplication...")
+            
+            deduplicate_company_folders(docstore_drive, docstore_local_path, llm_provider)
+    elif args.showlayout:
         if not docstore_uri:
             print("Error: DOCSTORE environment variable not set")
             print("Example: DOCSTORE=gdrive:abc123 or DOCSTORE=local:docstore")

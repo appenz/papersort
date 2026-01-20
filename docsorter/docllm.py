@@ -64,7 +64,12 @@ class LLMBase(ABC):
         """
         from .docsorter import DocSorter
         
-        self.check_file_size(doc.previous_path)
+        try:
+            self.check_file_size(doc.previous_path)
+        except ValueError as e:
+            print(f"File too large: {e}. Routing to Other.")
+            self._set_other_defaults(doc)
+            return True
         
         messages = self.build_messages(doc)
         
@@ -113,7 +118,7 @@ class LLMBase(ABC):
         title = base_name.replace('_', ' ').replace('-', ' ')
         
         doc.title = title
-        doc.suggested_path = "Other"
+        doc.suggested_path = "Unsortable & Other"
         doc.confidence = 0
         doc.year = None
         doc.date = None
@@ -168,3 +173,103 @@ def result_to_dict(result: str) -> Optional[Dict[str, str]]:
         return None
 
     return result_dict
+
+
+# Prompt for duplicate company detection
+DUPLICATE_DETECTION_PROMPT = """You are analyzing a list of company folder names to find duplicates.
+These folders are meant to store documents from different companies, but sometimes the same company
+has been filed under different names (e.g., "Chase Bank" and "Chase", or "Goldman Sachs" and "GS").
+
+Your task is to find EXACTLY ONE pair of folder names that likely refer to the same company.
+
+Rules:
+- Only identify folders that clearly refer to the SAME company (not related companies or subsidiaries)
+- If you find multiple potential duplicates, return only the MOST OBVIOUS one
+- If no duplicates exist, return "None"
+
+You MUST respond in EXACTLY this format (no other text):
+DUPLICATE: FolderA | FolderB
+
+Or if no duplicates:
+DUPLICATE: None
+
+Here are the folder names to analyze:
+"""
+
+
+def find_duplicate_pair(folder_names: List[str], llm_provider: str = "mistral") -> Optional[Tuple[str, str]]:
+    """Find a pair of folder names that likely refer to the same company.
+    
+    Uses an LLM to analyze folder names and detect potential duplicates.
+    Returns at most ONE pair per call to allow for user confirmation before
+    continuing the search.
+    
+    Args:
+        folder_names: List of company folder names to analyze
+        llm_provider: LLM provider to use ("mistral" or "openai")
+        
+    Returns:
+        Tuple of (folder1, folder2) if a duplicate is found, None otherwise
+    """
+    if len(folder_names) < 2:
+        return None
+    
+    # Build the prompt with the folder list
+    prompt = DUPLICATE_DETECTION_PROMPT + "\n".join(f"- {name}" for name in folder_names)
+    
+    messages = [{"role": "user", "content": prompt}]
+    
+    # Get LLM response
+    if llm_provider == "openai":
+        from .llm_openai import OpenAILLM
+        llm = OpenAILLM()
+    else:
+        from .llm_mistral import MistralLLM
+        llm = MistralLLM()
+    
+    response, _ = llm.complete(messages)
+    
+    # Parse the response
+    return _parse_duplicate_response(response, folder_names)
+
+
+def _parse_duplicate_response(response: str, valid_folders: List[str]) -> Optional[Tuple[str, str]]:
+    """Parse the LLM response for duplicate detection.
+    
+    Args:
+        response: Raw LLM response text
+        valid_folders: List of valid folder names to validate against
+        
+    Returns:
+        Tuple of (folder1, folder2) if valid duplicate found, None otherwise
+    """
+    # Look for the DUPLICATE: line
+    for line in response.strip().split('\n'):
+        line = line.strip()
+        if line.upper().startswith('DUPLICATE:'):
+            value = line.split(':', 1)[1].strip()
+            
+            # Check for "None" response
+            if value.lower() == 'none':
+                return None
+            
+            # Parse "FolderA | FolderB" format
+            if '|' in value:
+                parts = [p.strip() for p in value.split('|')]
+                if len(parts) == 2:
+                    folder1, folder2 = parts
+                    
+                    # Validate both folders exist in the original list
+                    if folder1 in valid_folders and folder2 in valid_folders:
+                        return (folder1, folder2)
+                    
+                    # Try case-insensitive match
+                    folder1_match = next((f for f in valid_folders if f.lower() == folder1.lower()), None)
+                    folder2_match = next((f for f in valid_folders if f.lower() == folder2.lower()), None)
+                    
+                    if folder1_match and folder2_match:
+                        return (folder1_match, folder2_match)
+                    
+                    print(f"Warning: LLM returned folders not in list: {folder1}, {folder2}")
+    
+    return None
