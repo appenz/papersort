@@ -73,8 +73,10 @@ class LLMBase(ABC):
             result_dict = result_to_dict(result)
             
             if result_dict is None:
-                print("Error: LLM did not return a valid result.")
-                return False
+                # LLM returned invalid response - route to Other
+                print("LLM returned invalid response, routing to Other.")
+                self._set_other_defaults(doc)
+                return True
             
             # Check if the suggested path is valid
             if DocSorter.path_exists(result_dict['SUGGESTED_PATH']):
@@ -94,8 +96,29 @@ class LLMBase(ABC):
                 "content": "This is incorrect, the path that you suggested is not valid. Try again."
             })
         
-        print(f"Failed to get valid path after {MAX_PATH_RETRIES} attempts.")
-        return False
+        print(f"Failed to get valid path after {MAX_PATH_RETRIES} attempts, routing to Other.")
+        self._set_other_defaults(doc)
+        return True
+    
+    def _set_other_defaults(self, doc: "DocSorter") -> None:
+        """Set default values for documents that can't be properly classified.
+        
+        Routes the document to 'Other' with minimal metadata derived from filename.
+        """
+        import os
+        
+        # Extract a title from the filename (without extension)
+        base_name = os.path.splitext(doc.file_name)[0]
+        # Clean up common filename patterns (underscores, dashes)
+        title = base_name.replace('_', ' ').replace('-', ' ')
+        
+        doc.title = title
+        doc.suggested_path = "Other"
+        doc.confidence = 0
+        doc.year = None
+        doc.date = None
+        doc.entity = None
+        doc.summary = "Document could not be automatically classified."
 
 
 def result_to_dict(result: str) -> Optional[Dict[str, str]]:

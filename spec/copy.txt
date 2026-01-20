@@ -1,0 +1,124 @@
+Copy Feature Specification
+==========================
+
+This document describes the copy feature that allows processed documents to be 
+copied to their designated location in the docstore.
+
+Command Line Options
+--------------------
+
+--copy      Enable copy mode. After processing (or cache hit), copy the file 
+            to its designated location in the docstore.
+
+--verify    Use with --copy. Verify that files exist at their destination 
+            before skipping. Without this flag, the system trusts the database
+            to minimize network operations.
+
+
+Database Schema
+---------------
+
+Three new fields are added to the documents table:
+
+- source (TEXT): Full source URI where the file came from
+  - GDrive format: "gdrive:{folder_id}:{relative_path}"
+  - Local format: "local:{inbox_path}:{relative_path}"
+
+- copied (INTEGER): 0 or 1, indicates if file has been copied to docstore
+
+- dest_path (TEXT): Full destination path including filename
+  - Example: "Financial & Banking/Bank Accounts/Chase Statement 2024.pdf"
+
+
+Copy Logic Flow
+---------------
+
+After processing a file (or retrieving from cache), the copy logic follows
+these steps:
+
+1. If --copy flag is off → done (no copying)
+
+2. If copied=True in DB AND --verify=False → done (trust DB, skip)
+
+3. If copied=True in DB AND --verify=True:
+   - Check if dest_path exists in docstore
+   - If exists → done
+   - If missing → re-copy to dest_path
+
+4. For new files (copied=False or not in DB):
+   - Generate base filename: "{title} {year}.pdf"
+   - Check if base filename exists at destination
+   - If NO → copy with base filename
+   - If YES (collision):
+     - Generate hash filename: "{title} {year} [{hash8}].pdf"
+     - Check if hash filename exists
+     - If YES → skip (file already there), update DB
+     - If NO → copy with hash filename
+
+5. Update DB: set copied=True and dest_path
+
+
+Destination Filename Generation
+-------------------------------
+
+Files are renamed based on their metadata:
+
+Base format:    "{title} {year}.pdf"
+Collision format: "{title} {year} [{hash_prefix}].pdf"
+
+Examples:
+- "Bank Statement 2024.pdf"
+- "Tax Return 2023.pdf"
+- "Bank Statement 2024 [a1b2c3d4].pdf"  (collision case)
+
+The hash_prefix is the first 8 characters of the file's SHA256 hash, ensuring
+uniqueness based on file content.
+
+Filename sanitization:
+- Invalid characters (/\:*?"<>|) are removed or replaced
+- Leading/trailing whitespace and dots are trimmed
+- Multiple spaces/dashes are collapsed
+- Maximum length: 100 characters (before extension)
+
+
+Existence Checks Summary
+------------------------
+
+| Scenario                    | Checks | Action                          |
+|-----------------------------|--------|---------------------------------|
+| Re-upload, no --verify      | 0      | Skip (trust DB)                 |
+| Re-upload, with --verify    | 1      | Check dest_path from DB         |
+| New file, no collision      | 1      | Upload with base name           |
+| New file, with collision    | 2      | Upload with hash name (or skip) |
+
+The hybrid filename approach minimizes network calls while ensuring no
+duplicate files are created in the docstore.
+
+
+Idempotency
+-----------
+
+The copy operation is idempotent:
+
+1. Same file uploaded multiple times → only copied once (hash-based tracking)
+2. Different files with same metadata → different filenames (hash suffix)
+3. DB lost/reset → files discovered by existence check, DB updated
+
+The SHA256 hash of file content determines identity:
+- Same content = same hash = same destination filename
+- Different content = different hash = different destination filename
+
+
+Source URI Format
+-----------------
+
+Source URIs track where files originated from:
+
+GDrive:  gdrive:{folder_id}:{relative_path}
+         Example: gdrive:abc123xyz:Taxes/2024/return.pdf
+
+Local:   local:{inbox_path}:{relative_path}
+         Example: local:/Users/me/inbox:Taxes/2024/return.pdf
+
+Single file mode: local::{absolute_path}
+         Example: local::/Users/me/Downloads/document.pdf

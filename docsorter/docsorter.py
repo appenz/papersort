@@ -280,7 +280,8 @@ The layout description for the document store follow after this line.
     def get_layout(self) -> str:
         return DocSorter.layout
     
-    def save_to_db(self, db: "DocIndex", path: Optional[str] = None) -> None:
+    def save_to_db(self, db: "DocIndex", path: Optional[str] = None, 
+                   source: Optional[str] = None) -> None:
         """Save document metadata to the database."""
         metadata = {
             'title': self.title,
@@ -291,4 +292,4 @@ The layout description for the document store follow after this line.
             'entity': self.entity,
             'summary': self.summary
         }
-        db.insert(self.sha256, path, metadata)
+        db.insert(self.sha256, path, metadata, source=source)

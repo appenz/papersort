@@ -42,21 +42,58 @@ class DocIndex:
                 year INTEGER,
                 date TEXT,
                 entity TEXT,
-                summary TEXT
+                summary TEXT,
+                source TEXT,
+                copied INTEGER DEFAULT 0,
+                dest_path TEXT
             )
         """)
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path)
         """)
         self.conn.commit()
+        
+        # Migration: add new columns if they don't exist (for existing databases)
+        # Must run before creating indexes on new columns
+        self._migrate_add_columns()
+        
+        # Create index on source column (after migration ensures column exists)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source)
+        """)
+        self.conn.commit()
     
-    def insert(self, sha256: str, path: Optional[str], metadata: Dict) -> None:
+    def _migrate_add_columns(self) -> None:
+        """Add new columns to existing databases if they don't exist."""
+        cursor = self.conn.cursor()
+        
+        # Get existing columns
+        cursor.execute("PRAGMA table_info(documents)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        
+        # Add missing columns
+        migrations = [
+            ("source", "TEXT"),
+            ("copied", "INTEGER DEFAULT 0"),
+            ("dest_path", "TEXT"),
+        ]
+        
+        for col_name, col_type in migrations:
+            if col_name not in existing_columns:
+                cursor.execute(f"ALTER TABLE documents ADD COLUMN {col_name} {col_type}")
+        
+        self.conn.commit()
+    
+    def insert(self, sha256: str, path: Optional[str], metadata: Dict, 
+               source: Optional[str] = None, copied: bool = False, 
+               dest_path: Optional[str] = None) -> None:
         """Insert or update a document record."""
         cursor = self.conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO documents 
-            (sha256, path, title, suggested_path, confidence, year, date, entity, summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (sha256, path, title, suggested_path, confidence, year, date, entity, summary,
+             source, copied, dest_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             sha256,
             path,
@@ -66,8 +103,19 @@ class DocIndex:
             metadata.get('year'),
             metadata.get('date'),
             metadata.get('entity'),
-            metadata.get('summary')
+            metadata.get('summary'),
+            source,
+            1 if copied else 0,
+            dest_path
         ))
+        self.conn.commit()
+    
+    def update_copied(self, sha256: str, dest_path: str) -> None:
+        """Mark a document as copied and store its destination path."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE documents SET copied = 1, dest_path = ? WHERE sha256 = ?
+        """, (dest_path, sha256))
         self.conn.commit()
     
     def get_by_hash(self, sha256: str) -> Optional[Dict]:

@@ -9,6 +9,14 @@ import tempfile
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
 
+def _escape_query_value(value: str) -> str:
+    """Escape a value for use in Google Drive API query strings.
+    
+    Single quotes must be escaped with backslash in query parameters.
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
 def parse_storage_uri(uri: str) -> Tuple[str, str]:
     """Parse 'gdrive:folder_id' or 'local:path' into (type, value).
     
@@ -98,8 +106,9 @@ class GDrive:
         current_parent = self.docstore_folder_id
         
         for part in parts:
+            escaped_part = _escape_query_value(part)
             results = self.service.files().list(
-                q=f"name='{part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
+                q=f"name='{escaped_part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
                 fields="files(id, name)",
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
@@ -122,8 +131,9 @@ class GDrive:
             
             for part in parts:
                 # Search for existing folder
+                escaped_part = _escape_query_value(part)
                 results = self.service.files().list(
-                    q=f"name='{part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
+                    q=f"name='{escaped_part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
                     fields="files(id, name)",
                     supportsAllDrives=True,
                     includeItemsFromAllDrives=True,
@@ -148,8 +158,9 @@ class GDrive:
                     current_parent = folder['id']
             
             # Check if the final folder already exists
+            escaped_name = _escape_query_value(name)
             results = self.service.files().list(
-                q=f"name='{name}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
+                q=f"name='{escaped_name}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
                 fields="files(id, name)",
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
@@ -218,13 +229,14 @@ class GDrive:
         try:
             for i, part in enumerate(parts):
                 is_last = (i == len(parts) - 1)
+                escaped_part = _escape_query_value(part)
                 
                 # For intermediate parts, only search folders
                 # For the last part, search any type
                 if is_last:
-                    q = f"name='{part}' and '{current_parent}' in parents and trashed=false"
+                    q = f"name='{escaped_part}' and '{current_parent}' in parents and trashed=false"
                 else:
-                    q = f"name='{part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false"
+                    q = f"name='{escaped_part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false"
                 
                 results = self.service.files().list(
                     q=q,
@@ -245,6 +257,21 @@ class GDrive:
         except Exception as e:
             raise GDriveError(f"Failed to get item by path: {str(e)}")
 
+    def file_exists(self, path: str) -> bool:
+        """Check if a file exists at the given path relative to docstore folder.
+        
+        Args:
+            path: Path to check (e.g., "Financial/Bank Accounts/Statement 2024.pdf")
+            
+        Returns:
+            True if file exists, False otherwise
+        """
+        try:
+            item = self.get_item_by_path(path)
+            return item is not None
+        except GDriveError:
+            return False
+
     def upload_file(self, local_path: str, drive_path: str) -> Dict:
         """Uploads a file to Google Drive relative to docstore folder. Supports chunked upload for large files."""
         try:
@@ -263,8 +290,9 @@ class GDrive:
                 current_parent = self.docstore_folder_id
                 
                 for part in folder_parts:
+                    escaped_part = _escape_query_value(part)
                     results = self.service.files().list(
-                        q=f"name='{part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
+                        q=f"name='{escaped_part}' and mimeType='application/vnd.google-apps.folder' and '{current_parent}' in parents and trashed=false",
                         fields="files(id, name)",
                         supportsAllDrives=True,
                         includeItemsFromAllDrives=True,
@@ -292,8 +320,9 @@ class GDrive:
                 parent_id = self.docstore_folder_id
             
             # Check if file already exists (to update instead of create duplicate)
+            escaped_filename = _escape_query_value(filename)
             results = self.service.files().list(
-                q=f"name='{filename}' and '{parent_id}' in parents and trashed=false",
+                q=f"name='{escaped_filename}' and '{parent_id}' in parents and trashed=false",
                 fields="files(id, name)",
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
