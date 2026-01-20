@@ -16,7 +16,18 @@ TEST_ROOT = "appenz_test"
 def drive():
     """Create a GDrive instance for testing, skip if no credentials."""
     try:
-        d = GDrive()
+        # Get root folder ID from environment (using DOCSTORE for new config)
+        folder_id = os.environ.get('DOCSTORE')
+        if folder_id and folder_id.startswith('gdrive:'):
+            folder_id = folder_id[7:]  # Strip 'gdrive:' prefix
+        else:
+            # Fall back to old env var for backward compatibility in tests
+            folder_id = os.environ.get('GDRIVE_FOLDER_ID')
+        
+        if not folder_id:
+            pytest.skip("No DOCSTORE or GDRIVE_FOLDER_ID environment variable set")
+        
+        d = GDrive(root_folder_id=folder_id)
         # Ensure test root folder exists
         d.create_folder("", TEST_ROOT)
         yield d
@@ -46,11 +57,11 @@ class TestGDriveInit:
         assert drive.service is not None
         assert drive.creds is not None
 
-    def test_docstore_folder_created(self, drive):
-        """Test docstore folder is created on init."""
-        assert drive.docstore_folder is not None
-        assert 'id' in drive.docstore_folder
-        assert 'name' in drive.docstore_folder
+    def test_root_folder_set(self, drive):
+        """Test root folder is set on init."""
+        assert drive.root_folder is not None
+        assert 'id' in drive.root_folder
+        assert 'name' in drive.root_folder
 
 
 class TestCreateFolder:

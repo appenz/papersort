@@ -2,10 +2,19 @@ import os
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from gdrive.gdrive import parse_storage_uri
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 SERVICE_ACCOUNT_FILE = "service_account_key.json"
-FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
+
+# Support both new DOCSTORE format and old GDRIVE_FOLDER_ID
+docstore = os.getenv("DOCSTORE")
+if docstore:
+    storage_type, FOLDER_ID = parse_storage_uri(docstore)
+    if storage_type != "gdrive":
+        raise ValueError("This test only works with gdrive: URIs")
+else:
+    FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 
 creds = service_account.Credentials.from_service_account_file(
     SERVICE_ACCOUNT_FILE, scopes=SCOPES
