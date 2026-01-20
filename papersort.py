@@ -1,6 +1,7 @@
 from docsorter.docsorter import DocSorter
 from docsorter.docindex import DocIndex, compute_sha256
 from docsorter.docllm import find_duplicate_pair
+from docsorter.folder_matcher import resolve_company_folder
 from gdrive.gdrive import GDrive, parse_storage_uri
 import argparse
 import os
@@ -208,7 +209,8 @@ def process_file(pdf_path, db, llm_provider, update=False, cleanup_temp=False,
             verify=verify,
             db=db,
             docstore_drive=docstore_drive,
-            docstore_local_path=docstore_local_path
+            docstore_local_path=docstore_local_path,
+            llm_provider=llm_provider
         )
     
     if cleanup_temp:
@@ -216,14 +218,29 @@ def process_file(pdf_path, db, llm_provider, update=False, cleanup_temp=False,
 
 
 def _handle_copy(pdf_path, file_hash, title, year, suggested_path, existing,
-                 verify, db, docstore_drive, docstore_local_path):
+                 verify, db, docstore_drive, docstore_local_path,
+                 llm_provider="mistral"):
     """Handle the copy logic for a processed file.
     
     Copy flow:
-    1. If copied=True in DB AND verify=False → skip (trust DB)
-    2. If copied=True in DB AND verify=True → check dest_path exists, copy if missing
-    3. For new files: check base name, then hash name for collision handling
+    1. Resolve company folder names to prevent duplicates (e.g., "JPMorgan" vs "J.P.Morgan")
+    2. If copied=True in DB AND verify=False → skip (trust DB)
+    3. If copied=True in DB AND verify=True → check dest_path exists, copy if missing
+    4. For new files: check base name, then hash name for collision handling
     """
+    # Resolve company folder names before copying
+    # This prevents creating similar-but-different folders like "JPMorgan" vs "J.P.Morgan"
+    layout_tree = DocSorter._get_layout()
+    resolved_path = resolve_company_folder(
+        suggested_path,
+        layout_tree,
+        docstore_drive,
+        docstore_local_path,
+        llm_provider
+    )
+    if resolved_path != suggested_path:
+        suggested_path = resolved_path
+    
     # Check if already copied (from DB)
     if existing and existing.get('copied'):
         if not verify:
@@ -408,16 +425,17 @@ def process_gdrive_inbox(inbox_folder_id, db, llm_provider, copy=False, verify=F
                 os.unlink(temp_path)
 
 
-def main(copy=False, verify=False):
+def main(copy=False, verify=False, inbox=None):
     """Main entry point for batch processing inbox.
     
     Args:
         copy: If True, copy files to docstore after processing
         verify: If True, verify files exist at destination
+        inbox: Inbox URI (overrides INBOX env var if provided)
     """
     # Get configuration from environment
     docstore_uri = os.environ.get('DOCSTORE')
-    inbox_uri = os.environ.get('INBOX')
+    inbox_uri = inbox or os.environ.get('INBOX')
     llm_provider = os.environ.get('LLM_PROVIDER', 'mistral')
     
     if not docstore_uri:
@@ -426,8 +444,9 @@ def main(copy=False, verify=False):
         return
     
     if not inbox_uri:
-        print("Error: INBOX environment variable not set")
-        print("Example: INBOX=gdrive:xyz789 or INBOX=local:inbox")
+        print("Error: INBOX not specified")
+        print("Use --inbox or set INBOX environment variable")
+        print("Example: --inbox=gdrive:xyz789 or --inbox=local:inbox")
         return
     
     # Load layout from docstore and get drive instance
@@ -689,6 +708,8 @@ if __name__ == "__main__":
     parser.add_argument("--verify", action="store_true", help="Verify files exist at destination (use with --copy)")
     parser.add_argument("--deduplicate", action="store_true", 
                        help="Find and merge duplicate company folders in the docstore")
+    parser.add_argument("--inbox", type=str, 
+                       help="Inbox URI (e.g., gdrive:folder_id or local:path). Overrides INBOX env var.")
     args = parser.parse_args()
 
     # Get docstore from environment
@@ -743,4 +764,4 @@ if __name__ == "__main__":
                         docstore_local_path=docstore_local_path)
             db.close()
     else:
-        main(copy=args.copy, verify=args.verify)
+        main(copy=args.copy, verify=args.verify, inbox=args.inbox)
