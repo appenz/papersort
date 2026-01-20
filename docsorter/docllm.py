@@ -53,11 +53,14 @@ class LLMBase(ABC):
                 f"({file_size / 1024 / 1024:.1f}MB)"
             )
     
-    def sort(self, doc: "DocSorter") -> None:
+    def sort(self, doc: "DocSorter") -> bool:
         """Analyzes document and populates metadata fields.
         
         Args:
             doc: The DocSorter instance to populate with metadata.
+            
+        Returns:
+            True if successful, False if failed to get valid path.
         """
         from .docsorter import DocSorter
         
@@ -71,7 +74,7 @@ class LLMBase(ABC):
             
             if result_dict is None:
                 print("Error: LLM did not return a valid result.")
-                return
+                return False
             
             # Check if the suggested path is valid
             if DocSorter.path_exists(result_dict['SUGGESTED_PATH']):
@@ -82,7 +85,7 @@ class LLMBase(ABC):
                 doc.date = result_dict['DATE']
                 doc.entity = result_dict['ENTITY']
                 doc.summary = result_dict['SUMMARY']
-                return
+                return True
             
             # Path invalid - append correction message and retry
             print(f"Invalid path '{result_dict['SUGGESTED_PATH']}', asking LLM to retry ({attempt + 1}/{MAX_PATH_RETRIES})...")
@@ -92,6 +95,7 @@ class LLMBase(ABC):
             })
         
         print(f"Failed to get valid path after {MAX_PATH_RETRIES} attempts.")
+        return False
 
 
 def result_to_dict(result: str) -> Optional[Dict[str, str]]:

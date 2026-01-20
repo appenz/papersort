@@ -23,12 +23,12 @@ This program can read from and write to Google Drive. This functionality is enca
 
 - create_folder(path: str, name: str) -> Dict: Creates a new folder
   * Creates folders recursively if parent folders don't exist
-  * Returns metadata of the created folder
+  * Returns existing folder if already present (no duplicates)
 
 4. File Operations:
 - upload_file(local_path: str, drive_path: str) -> Dict: Uploads a file
-  * Supports large files through chunked upload
-  * Returns metadata of the uploaded file
+  * Supports large files through resumable/chunked upload
+  * Updates existing file if present (no duplicates)
 
 - download_file(drive_path: str, local_path: str) -> None: Downloads a file
   * Downloads to specified local path
@@ -38,8 +38,8 @@ This program can read from and write to Google Drive. This functionality is enca
   * Only ever moves to Trash (no permanent deletion)
 
 5. Error Handling:
-- Implements custom exceptions for common error cases
-- Handles rate limiting and quota exceeded scenarios
+- Implements custom GDriveError exception class
+- All methods wrap errors with descriptive messages
 
 6. Testing Requirements:
 - Unit tests for all public methods

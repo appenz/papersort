@@ -1,5 +1,6 @@
 from docsorter.docsorter import DocSorter
 from docsorter.docindex import DocIndex, compute_sha256
+from gdrive.gdrive import GDrive
 import argparse
 import os
 
@@ -32,7 +33,8 @@ def process_file(pdf_path, db, llm_provider, update=False):
         try:
             print(f"\033[91mProcessing: {filename}\033[0m")
             doc = DocSorter(pdf_path)
-            doc.sort(llm_provider=llm_provider)
+            if not doc.sort(llm_provider=llm_provider):
+                return
             doc.save_to_db(db)
             print(doc)
             path = doc.suggested_path
@@ -47,9 +49,15 @@ def process_file(pdf_path, db, llm_provider, update=False):
     else:
         print(f"✗ Path '{path}' does not exist in layout")
 
+def load_layout_from_gdrive():
+    """Load layout.txt from Google Drive docstore folder."""
+    drive = GDrive()
+    layout_content = drive.read_file_content("layout.txt")
+    DocSorter.set_layout_content(layout_content)
+    return drive
+
 def main():
-    layout_path = os.path.join('docstore', 'layout.txt')
-    DocSorter.set_layout_path(layout_path)    
+    load_layout_from_gdrive()
     db = DocIndex()
     inbox_dir = os.environ.get('INBOX', 'inbox')
     llm_provider = os.environ.get('LLM_PROVIDER', 'mistral')
@@ -73,12 +81,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.showlayout:
-        layout_path = os.path.join('docstore', 'layout.txt')
-        DocSorter.set_layout_path(layout_path)
+        load_layout_from_gdrive()
         DocSorter.print_layout()
     elif args.file:
-        layout_path = os.path.join('docstore', 'layout.txt')
-        DocSorter.set_layout_path(layout_path)
+        load_layout_from_gdrive()
         db = DocIndex()
         llm_provider = os.environ.get('LLM_PROVIDER', 'mistral')
         process_file(args.file, db, llm_provider, update=args.update)

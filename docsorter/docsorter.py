@@ -46,6 +46,12 @@ The layout description for the document store follow after this line.
         cls._layout_path = path
         cls._layout_tree = None
     
+    @classmethod
+    def set_layout_content(cls, content: str) -> None:
+        """Set layout directly from content string (e.g., from Google Drive)."""
+        cls.layout = content
+        cls._layout_tree = cls._parse_layout_content(content)
+    
     def __init__(self, file_path: str) -> None:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Input file not found: {file_path}")
@@ -78,7 +84,7 @@ The layout description for the document store follow after this line.
     
     @classmethod
     def _read_layout(cls) -> Dict[str, Union[Dict[str, Dict], Dict[str, str]]]:
-        """Parses layout.txt into a tree structure."""
+        """Parses layout.txt from file into a tree structure."""
         if not os.path.exists(cls._layout_path):
             raise FileNotFoundError(f"layout.txt not found at: {cls._layout_path}")
         
@@ -86,73 +92,76 @@ The layout description for the document store follow after this line.
         with open(cls._layout_path, 'r', encoding='utf-8') as f:
             cls.layout = f.read()
         
-        # Now read the file again for tree construction
+        return cls._parse_layout_content(cls.layout)
+    
+    @classmethod
+    def _parse_layout_content(cls, content: str) -> Dict[str, Union[Dict[str, Dict], Dict[str, str]]]:
+        """Parses layout content string into a tree structure."""
         tree: Dict[str, Union[Dict[str, Dict], Dict[str, str]]] = {}
         current_path: List[str] = []
         last_level = -1
         
-        with open(cls._layout_path, 'r', encoding='utf-8') as f:
-            layout_started = False
-            for line in f:
-                # Calculate depth BEFORE any stripping
-                depth = len(line) - len(line.lstrip())
-                level = depth // 2  # Assuming 2 spaces = 1 level
-                
-                line = line.strip()
-                
-                # More robust marker detection
-                if 'LAYOUT STARTS HERE' in line:
-                    layout_started = True
-                    continue
-                if not layout_started:
-                    continue
-                
-                # Skip empty lines
-                if not line:
-                    continue
-                
-                line = line.lstrip('-').strip()
-                
-                parts = line.split(':', 1)
-                if len(parts) == 1:
-                    parts.append(parts[0])
-                if len(parts) > 2:
-                    print(f"Malformed line in layout.txt: '{line}'")
-                    continue
-                
-                folder_name = parts[0].strip()
-                description = parts[1].strip()
-                
-                if len(folder_name) > 30:
-                    raise ValueError(f"Folder name too long (max 30 chars): {folder_name}")
-                if not folder_name or folder_name.startswith('.') or folder_name.startswith('-'):
-                    raise ValueError(f"Invalid folder name (cannot be empty or start with . or -): {folder_name}")
-                if not all(c.isprintable() and c not in '/\\' for c in folder_name):
-                    raise ValueError(f"Invalid characters in folder name (cannot contain / or \\): {folder_name}")
-                
-                # Update path based on level difference
-                if level > last_level:
-                    # Going deeper - append to current path
-                    current_path.append(folder_name)
-                elif level == last_level:
-                    # Same level - replace last component
-                    current_path[-1] = folder_name
-                else:
-                    # Going up - remove levels and add new folder
-                    current_path = current_path[:level]
-                    current_path.append(folder_name)
-                
-                last_level = level
-                
-                # Create nested structure
-                current_dict = tree
-                for path_part in current_path[:-1]:
-                    if path_part not in current_dict:
-                        current_dict[path_part] = {}
-                    current_dict = current_dict[path_part]
-                
-                # Add the current folder with its description
-                current_dict[current_path[-1]] = {"_description": description}
+        layout_started = False
+        for line in content.splitlines():
+            # Calculate depth BEFORE any stripping
+            depth = len(line) - len(line.lstrip())
+            level = depth // 2  # Assuming 2 spaces = 1 level
+            
+            line = line.strip()
+            
+            # More robust marker detection
+            if 'LAYOUT STARTS HERE' in line:
+                layout_started = True
+                continue
+            if not layout_started:
+                continue
+            
+            # Skip empty lines
+            if not line:
+                continue
+            
+            line = line.lstrip('-').strip()
+            
+            parts = line.split(':', 1)
+            if len(parts) == 1:
+                parts.append(parts[0])
+            if len(parts) > 2:
+                print(f"Malformed line in layout.txt: '{line}'")
+                continue
+            
+            folder_name = parts[0].strip()
+            description = parts[1].strip()
+            
+            if len(folder_name) > 30:
+                raise ValueError(f"Folder name too long (max 30 chars): {folder_name}")
+            if not folder_name or folder_name.startswith('.') or folder_name.startswith('-'):
+                raise ValueError(f"Invalid folder name (cannot be empty or start with . or -): {folder_name}")
+            if not all(c.isprintable() and c not in '/\\' for c in folder_name):
+                raise ValueError(f"Invalid characters in folder name (cannot contain / or \\): {folder_name}")
+            
+            # Update path based on level difference
+            if level > last_level:
+                # Going deeper - append to current path
+                current_path.append(folder_name)
+            elif level == last_level:
+                # Same level - replace last component
+                current_path[-1] = folder_name
+            else:
+                # Going up - remove levels and add new folder
+                current_path = current_path[:level]
+                current_path.append(folder_name)
+            
+            last_level = level
+            
+            # Create nested structure
+            current_dict = tree
+            for path_part in current_path[:-1]:
+                if path_part not in current_dict:
+                    current_dict[path_part] = {}
+                current_dict = current_dict[path_part]
+            
+            # Add the current folder with its description
+            current_dict[current_path[-1]] = {"_description": description}
         
         if not layout_started:
             raise ValueError("Layout marker '---LAYOUT STARTS HERE---' not found in layout.txt")
@@ -248,11 +257,14 @@ The layout description for the document store follow after this line.
             
         return "\n".join(parts)
 
-    def sort(self, llm_provider: str = "mistral") -> None:
+    def sort(self, llm_provider: str = "mistral") -> bool:
         """Analyzes document and populates metadata fields.
         
         Args:
             llm_provider: The LLM provider to use ("mistral" or "openai").
+            
+        Returns:
+            True if successful, False if failed to get valid path.
         """
         if llm_provider == "openai":
             from .llm_openai import OpenAILLM
@@ -260,7 +272,7 @@ The layout description for the document store follow after this line.
         else:
             from .llm_mistral import MistralLLM
             llm = MistralLLM()
-        llm.sort(self) 
+        return llm.sort(self) 
 
     def get_static_prompt(self) -> str:
        return DocSorter.static_prompt 
