@@ -118,6 +118,36 @@ def file_exists_in_docstore(dest_path: str, docstore_drive: Optional[GDrive],
         return os.path.exists(full_path)
 
 
+def _move_in_docstore(old_path: str, new_path: str, docstore_drive: Optional[GDrive],
+                      docstore_local_path: Optional[str]) -> bool:
+    """Move a file within the docstore from old_path to new_path.
+    
+    Args:
+        old_path: Current path within docstore
+        new_path: New path within docstore
+        docstore_drive: GDrive instance if docstore is on GDrive, None otherwise
+        docstore_local_path: Local path to docstore if local, None otherwise
+        
+    Returns:
+        True if move succeeded, False otherwise
+    """
+    try:
+        if docstore_drive:
+            # For GDrive, move to the new folder
+            new_folder = os.path.dirname(new_path)
+            docstore_drive.move_file(old_path, new_folder)
+        else:
+            # For local filesystem
+            full_old_path = os.path.join(docstore_local_path, old_path)
+            full_new_path = os.path.join(docstore_local_path, new_path)
+            os.makedirs(os.path.dirname(full_new_path), exist_ok=True)
+            shutil.move(full_old_path, full_new_path)
+        return True
+    except Exception as e:
+        print(f"Error moving file: {str(e)}")
+        return False
+
+
 def process_file(pdf_path, db, llm_provider, update=False, cleanup_temp=False,
                  copy=False, verify=False, source=None,
                  docstore_drive=None, docstore_local_path=None):
@@ -151,6 +181,7 @@ def process_file(pdf_path, db, llm_provider, update=False, cleanup_temp=False,
     year = None
     suggested_path = None
     
+    # --update: force re-evaluation via LLM, ignoring cached metadata
     if existing and not update:
         print(f"\033[93mCached: {filename}\033[0m")
         print(f"File: {filename}")
@@ -182,9 +213,6 @@ def process_file(pdf_path, db, llm_provider, update=False, cleanup_temp=False,
             title = doc.title
             year = doc.year
             suggested_path = doc.suggested_path
-            
-            if update and existing and existing.get('suggested_path') != suggested_path:
-                print(f"\033[91mPath changed: {existing['suggested_path']} -> {suggested_path}\033[0m")
         except Exception as e:
             print(f"Error processing {filename}: {str(e)}")
             if cleanup_temp:
@@ -222,14 +250,14 @@ def _handle_copy(pdf_path, file_hash, title, year, suggested_path, existing,
                  llm_provider="mistral"):
     """Handle the copy logic for a processed file.
     
-    Copy flow:
+    Logic:
     1. Resolve company folder names to prevent duplicates (e.g., "JPMorgan" vs "J.P.Morgan")
-    2. If copied=True in DB AND verify=False → skip (trust DB)
-    3. If copied=True in DB AND verify=True → check dest_path exists, copy if missing
-    4. For new files: check base name, then hash name for collision handling
+    2. If file already copied to docstore:
+       - If already in correct folder → skip (or verify if --verify)
+       - If in wrong folder → move to correct folder
+    3. If file not yet copied → copy to suggested path
     """
     # Resolve company folder names before copying
-    # This prevents creating similar-but-different folders like "JPMorgan" vs "J.P.Morgan"
     layout_tree = DocSorter._get_layout()
     resolved_path = resolve_company_folder(
         suggested_path,
@@ -241,49 +269,73 @@ def _handle_copy(pdf_path, file_hash, title, year, suggested_path, existing,
     if resolved_path != suggested_path:
         suggested_path = resolved_path
     
-    # Check if already copied (from DB)
-    if existing and existing.get('copied'):
-        if not verify:
-            # Trust DB, skip
-            print(f"✓ Already copied (skipping)")
-            return
-        
-        # Verify mode: check if dest_path actually exists
-        dest_path = existing.get('dest_path')
-        if dest_path and file_exists_in_docstore(dest_path, docstore_drive, docstore_local_path):
-            print(f"✓ Verified: {dest_path}")
-            return
-        
-        # File missing at dest_path, need to re-copy
-        if dest_path:
-            print(f"! File missing at {dest_path}, re-copying...")
-            if copy_to_docstore(pdf_path, dest_path, docstore_drive, docstore_local_path):
-                print(f"✓ Re-copied to: {dest_path}")
-            return
-    
-    # New file or not yet copied: determine destination filename
+    # Generate the filename we'd use for this file
     base_name, hash_name = generate_dest_filename(title, year, file_hash)
     
-    # Build full destination paths
+    # Check if file was already copied (from DB)
+    if existing and existing.get('copied'):
+        current_dest_path = existing.get('dest_path')
+        current_folder = os.path.dirname(current_dest_path) if current_dest_path else None
+        
+        # Compare current folder with suggested folder
+        if current_folder == suggested_path:
+            # File is already in the correct folder
+            if not verify:
+                print(f"✓ Already in correct location (skipping)")
+                return
+            
+            # Verify mode: check file actually exists
+            if file_exists_in_docstore(current_dest_path, docstore_drive, docstore_local_path):
+                print(f"✓ Verified: {current_dest_path}")
+                return
+            
+            # File missing, re-copy to same location
+            print(f"! File missing at {current_dest_path}, re-copying...")
+            if copy_to_docstore(pdf_path, current_dest_path, docstore_drive, docstore_local_path):
+                print(f"✓ Re-copied to: {current_dest_path}")
+            return
+        
+        # File is in wrong folder - needs to be moved
+        if current_dest_path:
+            current_filename = os.path.basename(current_dest_path)
+            new_dest_path = f"{suggested_path}/{current_filename}"
+            
+            print(f"Path changed: {current_folder} -> {suggested_path}")
+            
+            if file_exists_in_docstore(current_dest_path, docstore_drive, docstore_local_path):
+                # Move the file
+                if _move_in_docstore(current_dest_path, new_dest_path, docstore_drive, docstore_local_path):
+                    db.update_copied(file_hash, new_dest_path)
+                    print(f"✓ Moved to: {new_dest_path}")
+                else:
+                    print(f"✗ Failed to move file")
+            else:
+                # File missing at old location, copy to new location
+                print(f"! File missing at old location, copying to new location...")
+                if copy_to_docstore(pdf_path, new_dest_path, docstore_drive, docstore_local_path):
+                    db.update_copied(file_hash, new_dest_path)
+                    print(f"✓ Copied to: {new_dest_path}")
+            return
+    
+    # File not yet copied: copy to suggested path
     base_dest = f"{suggested_path}/{base_name}"
     hash_dest = f"{suggested_path}/{hash_name}"
     
-    # Check if base name exists
+    # Try base name first (no hash suffix)
     if not file_exists_in_docstore(base_dest, docstore_drive, docstore_local_path):
-        # No collision, use base name
         if copy_to_docstore(pdf_path, base_dest, docstore_drive, docstore_local_path):
             db.update_copied(file_hash, base_dest)
             print(f"✓ Copied to: {base_dest}")
         return
     
-    # Base name exists (collision), check hash name
+    # Base name exists - check if it's the same file (hash name exists)
     if file_exists_in_docstore(hash_dest, docstore_drive, docstore_local_path):
-        # Hash name also exists - file is already there
+        # File already there with hash suffix
         db.update_copied(file_hash, hash_dest)
         print(f"✓ Already exists: {hash_dest}")
         return
     
-    # Copy with hash-suffixed name
+    # Name collision with different file - use hash suffix
     if copy_to_docstore(pdf_path, hash_dest, docstore_drive, docstore_local_path):
         db.update_copied(file_hash, hash_dest)
         print(f"✓ Copied to: {hash_dest}")
@@ -342,14 +394,15 @@ def load_layout(docstore_uri):
         raise ValueError(f"Unknown storage type: {storage_type}")
 
 
-def process_local_inbox(inbox_path, db, llm_provider, copy=False, verify=False,
-                        docstore_drive=None, docstore_local_path=None):
+def process_local_inbox(inbox_path, db, llm_provider, update=False, copy=False, 
+                        verify=False, docstore_drive=None, docstore_local_path=None):
     """Process all PDFs in a local inbox directory recursively.
     
     Args:
         inbox_path: Local path to inbox directory
         db: DocIndex database instance
         llm_provider: LLM provider to use
+        update: If True, reprocess even if cached
         copy: If True, copy files to docstore
         verify: If True, verify files exist at destination
         docstore_drive: GDrive instance if docstore is on GDrive
@@ -370,20 +423,21 @@ def process_local_inbox(inbox_path, db, llm_provider, copy=False, verify=False,
                 # Build source URI: local:{inbox_path}:{relative_path}
                 source = f"local:{inbox_path}:{rel_path}"
                 
-                process_file(filepath, db, llm_provider,
+                process_file(filepath, db, llm_provider, update=update,
                            copy=copy, verify=verify, source=source,
                            docstore_drive=docstore_drive,
                            docstore_local_path=docstore_local_path)
 
 
-def process_gdrive_inbox(inbox_folder_id, db, llm_provider, copy=False, verify=False,
-                         docstore_drive=None, docstore_local_path=None):
+def process_gdrive_inbox(inbox_folder_id, db, llm_provider, update=False, copy=False, 
+                         verify=False, docstore_drive=None, docstore_local_path=None):
     """Process all PDFs in a Google Drive inbox folder recursively.
     
     Args:
         inbox_folder_id: Google Drive folder ID for inbox
         db: DocIndex database instance
         llm_provider: LLM provider to use
+        update: If True, reprocess even if cached
         copy: If True, copy files to docstore
         verify: If True, verify files exist at destination
         docstore_drive: GDrive instance if docstore is on GDrive
@@ -414,7 +468,7 @@ def process_gdrive_inbox(inbox_folder_id, db, llm_provider, copy=False, verify=F
         
         try:
             # Process the file (cleanup_temp=True to delete after)
-            process_file(temp_path, db, llm_provider, cleanup_temp=True,
+            process_file(temp_path, db, llm_provider, update=update, cleanup_temp=True,
                         copy=copy, verify=verify, source=source,
                         docstore_drive=docstore_drive,
                         docstore_local_path=docstore_local_path)
@@ -425,10 +479,11 @@ def process_gdrive_inbox(inbox_folder_id, db, llm_provider, copy=False, verify=F
                 os.unlink(temp_path)
 
 
-def main(copy=False, verify=False, inbox=None):
+def main(update=False, copy=False, verify=False, inbox=None):
     """Main entry point for batch processing inbox.
     
     Args:
+        update: If True, reprocess even if cached
         copy: If True, copy files to docstore after processing
         verify: If True, verify files exist at destination
         inbox: Inbox URI (overrides INBOX env var if provided)
@@ -462,6 +517,8 @@ def main(copy=False, verify=False, inbox=None):
     print(f"Using LLM provider: {llm_provider}")
     print(f"Docstore: {docstore_name}")
     print(f"Inbox: {inbox_name}")
+    if update:
+        print("Update mode: enabled (ignoring cache)")
     if copy:
         print(f"Copy mode: enabled" + (" (with verify)" if verify else ""))
     
@@ -470,12 +527,12 @@ def main(copy=False, verify=False, inbox=None):
     
     # Process inbox based on type
     if inbox_type == "gdrive":
-        process_gdrive_inbox(inbox_value, db, llm_provider,
+        process_gdrive_inbox(inbox_value, db, llm_provider, update=update,
                             copy=copy, verify=verify,
                             docstore_drive=docstore_drive,
                             docstore_local_path=docstore_local_path)
     elif inbox_type == "local":
-        process_local_inbox(inbox_value, db, llm_provider,
+        process_local_inbox(inbox_value, db, llm_provider, update=update,
                            copy=copy, verify=verify,
                            docstore_drive=docstore_drive,
                            docstore_local_path=docstore_local_path)
@@ -764,4 +821,4 @@ if __name__ == "__main__":
                         docstore_local_path=docstore_local_path)
             db.close()
     else:
-        main(copy=args.copy, verify=args.verify, inbox=args.inbox)
+        main(update=args.update, copy=args.copy, verify=args.verify, inbox=args.inbox)
