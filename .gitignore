@@ -18,6 +18,7 @@ docstore
 .env
 credentials.json
 token.pickle
+dropbox_token.json
 
 
 .DS_Store

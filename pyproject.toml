@@ -1,9 +1,10 @@
 [project]
 name = "papersort"
 version = "0.1.0"
-description = "A tool to sort papers using Google Drive"
+description = "A tool to sort papers using Google Drive and Dropbox"
 requires-python = ">=3.13"
 dependencies = [
+    "dropbox>=12.0.2",
     "google-api-python-client>=2.165.0",
     "google-auth>=2.38.0",
     "google-auth-oauthlib>=1.2.1",

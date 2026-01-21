@@ -165,13 +165,13 @@ def _escape_query_value(value: str) -> str:
 
 
 def parse_storage_uri(uri: str) -> Tuple[str, str]:
-    """Parse 'gdrive:folder_id' or 'local:path' into (type, value).
+    """Parse 'gdrive:folder_id', 'local:path', or 'dropbox:/path' into (type, value).
     
     Args:
-        uri: Storage URI with prefix (e.g., 'gdrive:abc123' or 'local:inbox')
+        uri: Storage URI with prefix (e.g., 'gdrive:abc123', 'local:inbox', or 'dropbox:/Inbox')
         
     Returns:
-        Tuple of (storage_type, value) where storage_type is 'gdrive' or 'local'
+        Tuple of (storage_type, value) where storage_type is 'gdrive', 'local', or 'dropbox'
         
     Raises:
         ValueError: If URI doesn't start with a valid prefix
@@ -180,8 +180,10 @@ def parse_storage_uri(uri: str) -> Tuple[str, str]:
         return ("gdrive", uri[7:])
     elif uri.startswith("local:"):
         return ("local", uri[6:])
+    elif uri.startswith("dropbox:"):
+        return ("dropbox", uri[8:])
     else:
-        raise ValueError(f"Invalid storage URI: {uri}. Must start with 'gdrive:' or 'local:'")
+        raise ValueError(f"Invalid storage URI: {uri}. Must start with 'gdrive:', 'local:', or 'dropbox:'")
 
 
 class GDriveError(Exception):

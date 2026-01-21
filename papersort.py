@@ -3,6 +3,7 @@ from docsorter.docindex import DocIndex, compute_sha256
 from docsorter.docllm import find_duplicate_pair
 from docsorter.folder_matcher import resolve_company_folder
 from gdrive.gdrive import GDrive, parse_storage_uri
+from dbx.dropbox import Dropbox, DropboxError, authenticate_dropbox
 import argparse
 import os
 import re
@@ -345,7 +346,7 @@ def get_storage_display_name(uri):
     """Get a human-readable display name for a storage URI.
     
     Args:
-        uri: Storage URI (e.g., 'gdrive:folder_id' or 'local:path')
+        uri: Storage URI (e.g., 'gdrive:folder_id', 'local:path', or 'dropbox:/path')
         
     Returns:
         Tuple of (display_name, storage_type, value)
@@ -360,6 +361,14 @@ def get_storage_display_name(uri):
     elif storage_type == "local":
         # Use the path, or just the folder name for display
         return (f"{value} (local)", storage_type, value)
+    elif storage_type == "dropbox":
+        # Use the path for display, get account name if possible
+        try:
+            dbx = Dropbox()
+            account_name = dbx.get_display_name()
+            return (f"{value} ({account_name} Dropbox)", storage_type, value)
+        except DropboxError:
+            return (f"{value} (Dropbox)", storage_type, value)
     else:
         return (uri, storage_type, value)
 
@@ -479,6 +488,66 @@ def process_gdrive_inbox(inbox_folder_id, db, llm_provider, update=False, copy=F
                 os.unlink(temp_path)
 
 
+def process_dropbox_inbox(inbox_path, db, llm_provider, update=False, copy=False, 
+                          verify=False, docstore_drive=None, docstore_local_path=None):
+    """Process all PDFs in a Dropbox inbox folder recursively.
+    
+    Args:
+        inbox_path: Dropbox folder path (e.g., "/Inbox" or "/Documents/ToSort")
+        db: DocIndex database instance
+        llm_provider: LLM provider to use
+        update: If True, reprocess even if cached
+        copy: If True, copy files to docstore
+        verify: If True, verify files exist at destination
+        docstore_drive: GDrive instance if docstore is on GDrive
+        docstore_local_path: Local path if docstore is local
+    """
+    # Create Dropbox client
+    try:
+        dbx = Dropbox()
+    except DropboxError as e:
+        print(f"Error connecting to Dropbox: {str(e)}")
+        return
+    
+    # Get all PDFs recursively
+    try:
+        pdf_files = dbx.list_files_recursive(inbox_path, extension=".pdf")
+    except DropboxError as e:
+        print(f"Error listing Dropbox folder: {str(e)}")
+        return
+    
+    if not pdf_files:
+        print("No PDF files found in inbox")
+        return
+    
+    print(f"Found {len(pdf_files)} PDF files in inbox")
+    
+    for file_info in pdf_files:
+        print(f"\n--- {file_info['path']} ---")
+        
+        # Build source URI: dropbox:{path}
+        source = f"dropbox:{file_info['path']}"
+        
+        # Download to temp file
+        try:
+            temp_path = dbx.download_to_temp(file_info['path'], file_info['name'])
+        except DropboxError as e:
+            print(f"Error downloading {file_info['name']}: {str(e)}")
+            continue
+        
+        try:
+            # Process the file (cleanup_temp=True to delete after)
+            process_file(temp_path, db, llm_provider, update=update, cleanup_temp=True,
+                        copy=copy, verify=verify, source=source,
+                        docstore_drive=docstore_drive,
+                        docstore_local_path=docstore_local_path)
+        except Exception as e:
+            print(f"Error processing {file_info['name']}: {str(e)}")
+            # Ensure temp file is cleaned up even on error
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+
 def main(update=False, copy=False, verify=False, inbox=None):
     """Main entry point for batch processing inbox.
     
@@ -536,6 +605,11 @@ def main(update=False, copy=False, verify=False, inbox=None):
                            copy=copy, verify=verify,
                            docstore_drive=docstore_drive,
                            docstore_local_path=docstore_local_path)
+    elif inbox_type == "dropbox":
+        process_dropbox_inbox(inbox_value, db, llm_provider, update=update,
+                             copy=copy, verify=verify,
+                             docstore_drive=docstore_drive,
+                             docstore_local_path=docstore_local_path)
     else:
         print(f"Unknown inbox storage type: {inbox_type}")
     
@@ -766,8 +840,33 @@ if __name__ == "__main__":
     parser.add_argument("--deduplicate", action="store_true", 
                        help="Find and merge duplicate company folders in the docstore")
     parser.add_argument("--inbox", type=str, 
-                       help="Inbox URI (e.g., gdrive:folder_id or local:path). Overrides INBOX env var.")
+                       help="Inbox URI (e.g., gdrive:folder_id, local:path, or dropbox:/path). Overrides INBOX env var.")
+    parser.add_argument("--auth-dropbox", action="store_true",
+                       help="Authenticate with Dropbox (one-time setup)")
     args = parser.parse_args()
+
+    # Handle --auth-dropbox first (doesn't need DOCSTORE)
+    if args.auth_dropbox:
+        print("=== Dropbox Authentication Setup ===")
+        print()
+        print("You need your Dropbox app credentials.")
+        print("If you don't have an app yet, create one at: https://www.dropbox.com/developers/apps")
+        print()
+        print("App settings required:")
+        print("  - Permission type: Scoped access")
+        print("  - Access type: Full Dropbox")
+        print("  - Permissions: files.metadata.read, files.content.read")
+        print()
+        
+        app_key = input("Enter your App key: ").strip()
+        app_secret = input("Enter your App secret: ").strip()
+        
+        if not app_key or not app_secret:
+            print("Error: App key and secret are required")
+        else:
+            authenticate_dropbox(app_key, app_secret)
+        
+        exit(0)
 
     # Get docstore from environment
     docstore_uri = os.environ.get('DOCSTORE')
