@@ -1,0 +1,108 @@
+MetadataCache - Document Analysis Cache
+=======================================
+
+Location: workflows/metadata_cache.py
+Database: ~/Library/Application Support/papersort/metadata.db
+
+Caches LLM-extracted document metadata to avoid reprocessing identical files.
+Uses SQLite for persistence.
+
+
+Class: MetadataCache
+--------------------
+
+Constructor:
+  MetadataCache(db_path: str = None)
+    Creates database and tables if they don't exist.
+    Default path: ~/Library/Application Support/papersort/metadata.db
+
+Methods:
+  get_by_hash(sha256: str) -> dict | None
+    Primary lookup by file content hash.
+
+  get_by_path(path: str) -> dict | None
+    Secondary lookup by source path.
+
+  exists(sha256: str) -> bool
+    Quick existence check.
+
+  store(sha256: str, metadata: dict, source: str = None)
+    Insert or update document record.
+
+  update_copied(sha256: str, dest_path: str)
+    Mark file as copied, record destination.
+
+  close()
+    Close database connection.
+
+Helper:
+  compute_sha256(file_path: str) -> str
+    Compute SHA256 hash of file contents.
+
+
+Database Schema
+---------------
+
+Table: documents
+
+  sha256 TEXT PRIMARY KEY    -- File content hash (lookup key)
+  path TEXT                  -- Last known source path
+  source TEXT                -- Source URI (gdrive:id:path, local:path, etc.)
+  title TEXT                 -- Document title from LLM
+  suggested_path TEXT        -- Target path in docstore
+  confidence INTEGER         -- LLM confidence score (1-10)
+  year INTEGER               -- Document/tax year
+  date TEXT                  -- Document date (YYYY-MM format)
+  entity TEXT                -- Company/person name
+  summary TEXT               -- Brief description
+  copied INTEGER DEFAULT 0   -- 1 if copied to docstore
+  dest_path TEXT             -- Actual destination path after copy
+
+Index: idx_documents_path ON (path)
+
+
+Source URI Format
+-----------------
+
+Tracks where files originated:
+
+  gdrive:{folder_id}:{relative_path}
+    Example: gdrive:abc123:Taxes/2024/return.pdf
+
+  local:{inbox_path}:{relative_path}
+    Example: local:/Users/me/inbox:Taxes/2024/return.pdf
+
+  local::{absolute_path}
+    Example: local::/Users/me/Downloads/document.pdf
+
+
+Behavior
+--------
+
+  - Creates DB directory if missing
+  - Uses INSERT OR REPLACE for idempotent writes
+  - Returns dict with all fields or None for lookups
+  - SHA256 is the source of truth for file identity
+
+
+Usage Example
+-------------
+
+  cache = MetadataCache()
+
+  # Check cache before processing
+  existing = cache.get_by_hash(file_hash)
+  if existing and not force_update:
+      # Use cached metadata
+      title = existing['title']
+      suggested_path = existing['suggested_path']
+  else:
+      # Run LLM analysis
+      doc = DocSorter(file_path)
+      doc.sort(llm_provider)
+      doc.save_to_db(cache, source=source_uri)
+
+  # After copying
+  cache.update_copied(file_hash, dest_path)
+
+  cache.close()

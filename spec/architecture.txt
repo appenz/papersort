@@ -1,0 +1,96 @@
+PaperSort Architecture
+======================
+
+This document describes the layered architecture of PaperSort.
+
+
+Layers
+------
+
+Layer 1: CLI
+  - papersort.py: Entry point, argument parsing, dispatch to workflows
+  - config.py: Configuration loading, environment variables, validation
+
+Layer 2: Workflows (Business Logic)
+  - All domain logic lives here
+  - Workflows orchestrate storage and model calls
+  - No direct file I/O or API calls - delegates to Layer 3
+
+Layer 3: Infrastructure
+  - storage/: Abstraction over file storage backends
+  - models/: Abstraction over LLM providers
+  - utils/: Shared utilities (retry logic, etc.)
+
+
+Source Tree
+-----------
+
+papersort/
+├── papersort.py                 # CLI entry point (~80 lines)
+├── config.py                    # Arg parsing, env loading, AppConfig
+│
+├── workflows/                   # Layer 2: Business logic
+│   ├── __init__.py
+│   ├── filing.py                # Filing workflow + filename helpers
+│   ├── deduplication.py         # Folder deduplication workflow
+│   ├── docsorter.py             # Document analysis (LLM-based)
+│   ├── metadata_cache.py        # SQLite cache for analysis results
+│   └── folder_matcher.py        # Company name matching
+│
+├── storage/                     # Layer 3: Storage backends
+│   ├── __init__.py              # Exports create_storage(), StorageDriver
+│   ├── base.py                  # StorageDriver ABC, FileInfo, FolderInfo
+│   ├── local.py                 # LocalDriver (filesystem)
+│   ├── gdrive.py                # GDriveDriver (Google Drive)
+│   └── dbx.py                   # DropboxDriver (Dropbox, read-only)
+│
+├── models/                      # Layer 3: LLM backends
+│   ├── __init__.py              # Exports create_llm()
+│   ├── base.py                  # LLM interface
+│   ├── mistral.py               # Mistral API
+│   └── openai.py                # OpenAI API
+│
+├── utils/
+│   └── retry.py                 # Retry decorator with backoff
+│
+└── spec/                        # Specifications (this folder)
+
+
+StorageDriver Interface
+-----------------------
+
+All storage backends implement a uniform interface. Read-only backends
+(like Dropbox) raise NotImplementedError on write operations.
+
+class StorageDriver(ABC):
+
+    # Properties
+    display_name -> str           # Human-readable name
+
+    # Read Operations (required)
+    list_files(path, recursive=False, extension=None) -> List[FileInfo]
+    list_folders(path) -> List[FolderInfo]
+    file_exists(path) -> bool
+    read_text(path) -> str        # For text files like layout.txt
+    download_to_temp(path) -> str # Returns local path; caller cleans up
+
+    # Write Operations (optional - raise NotImplementedError if unsupported)
+    upload(local_path, dest_path) -> None
+    move(src_path, dest_folder) -> None
+    delete(path) -> None
+
+    # Filename Handling (storage-specific rules)
+    sanitize_filename(name) -> str
+
+Data classes:
+  FileInfo(path, name, size=None, id=None)
+  FolderInfo(path, name, id=None)
+
+Workflow Classes
+----------------
+
+FilingWorkflow(inbox, docstore, cache, llm_provider)
+  - Iterates files in inbox and files them 
+
+DeduplicationWorkflow(docstore, llm_provider)
+  - Removes duplicates (requires user confirmation)

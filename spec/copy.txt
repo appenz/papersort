@@ -1,124 +1,129 @@
-Copy Feature Specification
-==========================
+Copy Feature
+============
 
-This document describes the copy feature that allows processed documents to be 
-copied to their designated location in the docstore.
+Copies processed documents to their designated location in the docstore.
+Implemented in: workflows/filing.py
+
 
 Command Line Options
 --------------------
 
---copy      Enable copy mode. After processing (or cache hit), copy the file 
-            to its designated location in the docstore.
+--copy
+  Enable copy mode. After analysis (or cache hit), copy file to docstore.
 
---verify    Use with --copy. Verify that files exist at their destination 
-            before skipping. Without this flag, the system trusts the database
-            to minimize network operations.
-
-
-Database Schema
----------------
-
-Three new fields are added to the documents table:
-
-- source (TEXT): Full source URI where the file came from
-  - GDrive format: "gdrive:{folder_id}:{relative_path}"
-  - Local format: "local:{inbox_path}:{relative_path}"
-
-- copied (INTEGER): 0 or 1, indicates if file has been copied to docstore
-
-- dest_path (TEXT): Full destination path including filename
-  - Example: "Financial & Banking/Bank Accounts/Chase Statement 2024.pdf"
+--verify
+  Use with --copy. Verify files exist at destination before skipping.
+  Without this, trusts the database (fewer network calls).
 
 
 Copy Logic Flow
 ---------------
 
-After processing a file (or retrieving from cache), the copy logic follows
-these steps:
+After analyzing a file (or retrieving from cache):
 
-1. If --copy flag is off → done (no copying)
+1. If --copy not set → done (no copying)
 
-2. If copied=True in DB AND --verify=False → done (trust DB, skip)
+2. If already copied (DB says copied=True):
+   a. If --verify not set → skip (trust DB)
+   b. If --verify set:
+      - Check if dest_path exists in docstore
+      - If exists → done
+      - If missing → re-copy
 
-3. If copied=True in DB AND --verify=True:
-   - Check if dest_path exists in docstore
-   - If exists → done
-   - If missing → re-copy to dest_path
+3. If path changed (DB has different suggested_path):
+   - Move file from old location to new location
+   - Update DB with new dest_path
 
-4. For new files (copied=False or not in DB):
-   - Generate base filename: "{title} {year}.pdf"
-   - Check if base filename exists at destination
-   - If NO → copy with base filename
-   - If YES (collision):
-     - Generate hash filename: "{title} {year} [{hash8}].pdf"
-     - Check if hash filename exists
-     - If YES → skip (file already there), update DB
-     - If NO → copy with hash filename
-
-5. Update DB: set copied=True and dest_path
+4. If not yet copied:
+   a. Generate filename: "{title} {year}.pdf"
+   b. Sanitize via storage driver: docstore.sanitize_filename(name)
+   c. Check if filename exists at destination
+   d. If collision, add hash suffix: "{title} {year} [{hash8}].pdf"
+   e. Copy file to docstore
+   f. Update DB: copied=True, dest_path=actual_path
 
 
-Destination Filename Generation
--------------------------------
+Filename Generation
+-------------------
 
-Files are renamed based on their metadata:
+Location: workflows/filing.py (private helper functions)
 
 Base format:    "{title} {year}.pdf"
-Collision format: "{title} {year} [{hash_prefix}].pdf"
+Collision:      "{title} {year} [{hash_prefix}].pdf"
 
 Examples:
-- "Bank Statement 2024.pdf"
-- "Tax Return 2023.pdf"
-- "Bank Statement 2024 [a1b2c3d4].pdf"  (collision case)
+  - "Bank Statement 2024.pdf"
+  - "Tax Return 2023 [a1b2c3d4].pdf"
 
-The hash_prefix is the first 8 characters of the file's SHA256 hash, ensuring
-uniqueness based on file content.
-
-Filename sanitization:
-- Invalid characters (/\:*?"<>|) are removed or replaced
-- Leading/trailing whitespace and dots are trimmed
-- Multiple spaces/dashes are collapsed
-- Maximum length: 100 characters (before extension)
+The hash_prefix is first 8 characters of SHA256.
 
 
-Existence Checks Summary
-------------------------
+Company Folder Resolution
+-------------------------
 
-| Scenario                    | Checks | Action                          |
-|-----------------------------|--------|---------------------------------|
-| Re-upload, no --verify      | 0      | Skip (trust DB)                 |
-| Re-upload, with --verify    | 1      | Check dest_path from DB         |
-| New file, no collision      | 1      | Upload with base name           |
-| New file, with collision    | 2      | Upload with hash name (or skip) |
+Before copying, company folder names are resolved to prevent duplicates
+(e.g., "JPMorgan" vs "J.P. Morgan").
 
-The hybrid filename approach minimizes network calls while ensuring no
-duplicate files are created in the docstore.
+Location: workflows/folder_matcher.py
+
+Process:
+  1. Check if suggested_path ends in a "By company" folder
+  2. List existing folders in parent directory
+  3. Use LLM to check for matching company names
+  4. If match found, use existing folder name instead
+
+
+Database Updates
+----------------
+
+MetadataCache fields used by copy feature:
+
+  source      Where file came from (for tracking)
+  copied      1 if file has been copied to docstore
+  dest_path   Actual destination path including filename
+
+After successful copy:
+  cache.update_copied(sha256, dest_path)
 
 
 Idempotency
 -----------
 
-The copy operation is idempotent:
+Copy operation is idempotent:
 
-1. Same file uploaded multiple times → only copied once (hash-based tracking)
-2. Different files with same metadata → different filenames (hash suffix)
-3. DB lost/reset → files discovered by existence check, DB updated
+  - Same file → only copied once (hash-based identity)
+  - Different files, same name → different filenames (hash suffix)
+  - DB lost → files discovered by existence check, DB updated
+  - Re-run with --verify → validates and repairs
 
-The SHA256 hash of file content determines identity:
-- Same content = same hash = same destination filename
-- Different content = different hash = different destination filename
+SHA256 hash determines file identity:
+  - Same content = same hash = same destination
+  - Different content = different hash = different destination
 
 
-Source URI Format
------------------
+Implementation Notes
+--------------------
 
-Source URIs track where files originated from:
+The copy logic in workflows/filing.py:
 
-GDrive:  gdrive:{folder_id}:{relative_path}
-         Example: gdrive:abc123xyz:Taxes/2024/return.pdf
+  class FilingWorkflow:
+      def _copy_file(self, local_path, metadata, file_hash):
+          # Generate sanitized filename
+          name = self._generate_filename(metadata['title'], metadata['year'])
+          name = self.docstore.sanitize_filename(name)
 
-Local:   local:{inbox_path}:{relative_path}
-         Example: local:/Users/me/inbox:Taxes/2024/return.pdf
+          # Resolve company folder if applicable
+          dest_folder = resolve_company_folder(
+              metadata['suggested_path'],
+              self.layout_tree,
+              self.docstore,
+              self.llm_provider
+          )
 
-Single file mode: local::{absolute_path}
-         Example: local::/Users/me/Downloads/document.pdf
+          # Handle collisions, copy file
+          dest_path = self._copy_with_collision_handling(
+              local_path, dest_folder, name, file_hash
+          )
+
+          # Update cache
+          self.cache.update_copied(file_hash, dest_path)

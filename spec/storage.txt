@@ -1,0 +1,169 @@
+Storage Drivers
+===============
+
+Storage drivers provide a uniform interface for file operations across
+different backends (local filesystem, Google Drive, Dropbox).
+
+
+Interface: StorageDriver (storage/base.py)
+------------------------------------------
+
+Abstract base class that all drivers implement.
+
+Properties:
+
+  display_name -> str
+    Human-readable name for logging/display.
+    Examples: "My Docs (Google Drive)", "/Users/me/docstore (local)"
+
+Read Operations (all drivers must implement):
+
+  list_files(path="", recursive=False, extension=None) -> List[FileInfo]
+    List files at path. If recursive, includes subdirectories.
+    Extension filter is case-insensitive (e.g., ".pdf").
+
+  list_folders(path="") -> List[FolderInfo]
+    List immediate subfolders at path.
+
+  file_exists(path) -> bool
+    Check if file exists at path.
+
+  read_text(path) -> str
+    Read text file content (e.g., layout.txt).
+
+  download_to_temp(path) -> str
+    Download file to local temp location.
+    Returns local path. Caller is responsible for cleanup.
+    Note: LocalDriver returns original path (no copy).
+
+Write Operations (raise NotImplementedError if read-only):
+
+  upload(local_path, dest_path) -> None
+    Upload local file to storage. Creates parent folders as needed.
+
+  move(src_path, dest_folder) -> None
+    Move file to different folder within same storage.
+
+  delete(path) -> None
+    Delete file or folder. For safety, may move to trash instead.
+
+Filename Handling:
+
+  sanitize_filename(name) -> str
+    Sanitize filename for this storage backend.
+    Each backend has different allowed characters.
+
+
+Data Classes (storage/base.py)
+------------------------------
+
+@dataclass
+class FileInfo:
+    path: str              # Relative path within storage
+    name: str              # Filename only
+    size: Optional[int]    # File size in bytes
+    id: Optional[str]      # Backend-specific ID (e.g., GDrive file ID)
+
+@dataclass
+class FolderInfo:
+    path: str
+    name: str
+    id: Optional[str]
+
+
+Factory Function (storage/__init__.py)
+--------------------------------------
+
+create_storage(uri: str) -> StorageDriver
+
+  Creates appropriate driver from URI:
+    "local:/path"     -> LocalDriver
+    "gdrive:ID"       -> GDriveDriver
+    "dropbox:/path"   -> DropboxDriver
+
+
+LocalDriver (storage/local.py)
+------------------------------
+
+Wraps standard filesystem operations (os, shutil).
+
+Specifics:
+  - display_name: "{path} (local)"
+  - download_to_temp: Returns original path (no temp copy)
+  - sanitize_filename: Removes * ? / \ : < > | "
+  - delete: Uses os.remove / shutil.rmtree
+
+Constructor:
+  LocalDriver(root_path: str)
+
+
+GDriveDriver (storage/gdrive.py)
+--------------------------------
+
+Wraps Google Drive API via google-api-python-client.
+
+Specifics:
+  - display_name: "{folder_name} (Google Drive)"
+  - Uses service account authentication (service_account_key.json)
+  - All paths relative to root_folder_id
+  - sanitize_filename: Only removes /
+  - delete: Moves to trash (no permanent deletion)
+  - Automatic retry on transient errors (429, 5xx)
+
+Constructor:
+  GDriveDriver(root_folder_id: str, service_account_file="service_account_key.json")
+
+Authentication:
+  Requires service_account_key.json with Drive API access.
+  Service account must have access to the target folder.
+
+
+DropboxDriver (storage/dbx.py)
+------------------------------
+
+Wraps Dropbox API. Currently read-only (inbox source only).
+
+Specifics:
+  - display_name: "{path} ({account_name} Dropbox)"
+  - Uses OAuth with refresh token (dropbox_token.json)
+  - sanitize_filename: Removes /, trims whitespace
+  - Write operations raise NotImplementedError
+  - Automatic retry on rate limits
+
+Constructor:
+  DropboxDriver(root_path: str, token_file="dropbox_token.json")
+
+Authentication:
+  Run `python papersort.py --auth-dropbox` for one-time setup.
+  Stores refresh token in dropbox_token.json.
+
+
+Error Handling
+--------------
+
+All drivers raise StorageError (subclass of Exception) on failures.
+
+Transient errors (network issues, rate limits) are retried automatically
+with exponential backoff. See utils/retry.py.
+
+
+Filename Sanitization Rules
+---------------------------
+
+LocalDriver (strictest - filesystem limitations):
+  Remove:  * ? / \ : < > | "
+  Replace: Multiple spaces -> single space
+  Trim:    Leading/trailing whitespace and dots
+  Limit:   100 characters max
+
+GDriveDriver (permissive):
+  Remove:  / only
+  Limit:   None (Google allows long names)
+
+DropboxDriver (permissive):
+  Remove:  /
+  Trim:    Leading/trailing whitespace
+  Limit:   None
+
+This allows "E*Trade" as a folder name on Google Drive but converts
+it to "ETrade" on local filesystem.

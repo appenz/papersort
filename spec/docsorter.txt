@@ -1,41 +1,103 @@
-Document sorting is done in the class DocSorter
-- Create it in a new directory, docsorter
-- the class has an init functionality
-    - It reads DOCSTORE/layout.txt and converts the layout it into a tree (using dicts)
-    - Validates folder names in layout.txt:
-        - Max 30 characters
-        - Only alphanumeric, space, hyphen, underscore allowed
-    - Handles special cases in layout:
-        - "By year": Creates year-based subfolders (e.g. "2023", "2024")
-        - "By company": Creates company-based subfolders
-        - "Keep structure": Maintains original path structure
-        - "Other": Catchall for documents without good matches
+DocSorter - Document Analysis
+=============================
 
-- initializer is called with a file system path to a PDF or image
-    - should check if the file exists
-    - validates file type is PDF or image
-    - stores original path and filename
+Location: workflows/docsorter.py
 
-- The class has the following fields:
-    - Title: A one line summary what the document is about
-    - Year: The year of the document, for tax documents this is the Tax year
-    - Entity: Who the document is from or for
-    - Previous Path: The path the file is from, formatted like a Linux path
-    - File Name: A valid linux file name. 
-        - It should start with the date formatted as "2024-08" followed by a short, 50 letter max description
-        - Same file type as the input
-        - Example "2024-02 Chase Bank Monthly Account Statement.pdf"
-    - A suggested path to store the file based on the layout.txt file
+DocSorter analyzes PDF documents using an LLM to extract metadata and
+suggest a filing location based on the docstore layout.
 
-- Error Handling:
-    - GPT API failures: Retry up to 3 times, then give up
-    - Invalid path suggestions: Retry with LLM up to 3 times, then throw error
-    - Layout.txt missing/malformed: Throw clear error
-    - Path validation: Ensure suggested path exists in layout tree
 
-- Populating the fields are populated using gpt-4o via the OpenAI API. We send the PDF as an image with a prompt and parse the results.
-    - API key read from environment variables
-    - LLM makes final decisions on:
-        - Category placement
-        - Company name standardization
-        - Date selection
+Class: DocSorter
+----------------
+
+Constructor:
+  DocSorter(file_path: str)
+    - Validates file exists and is a PDF
+    - Computes SHA256 hash
+    - Loads layout if not already loaded
+
+Class Methods:
+  set_layout_content(content: str)
+    Set layout from string (e.g., read from storage driver).
+
+  path_exists(path: str) -> bool
+    Check if path is valid in layout tree.
+    Handles special cases: "By year" (any 4-digit year), "By company" (any name).
+
+  get_by_company_paths() -> List[str]
+    Find all paths with "By company" subfolders (for deduplication).
+
+  print_layout()
+    Print layout tree to stdout.
+
+Instance Fields (populated by sort()):
+  - sha256: str           File content hash
+  - title: str            Short document title (max 10 words)
+  - year: int             Document year (tax year for tax docs)
+  - date: str             Document date (YYYY-MM format)
+  - entity: str           Company/organization name
+  - suggested_path: str   Where to file in docstore
+  - confidence: int       1-10 confidence in suggested path
+  - summary: str          Brief description (max 100 words)
+
+Methods:
+  sort(llm_provider="mistral") -> bool
+    Analyze document with LLM. Returns True on success.
+    Uses models/ layer for LLM calls.
+
+  save_to_db(cache: MetadataCache, source: str = None)
+    Save metadata to cache.
+
+
+LLM Integration
+---------------
+
+DocSorter uses the models/ layer for LLM calls:
+
+  from models import create_llm
+  llm = create_llm(provider)  # "mistral" or "openai"
+  llm.analyze_document(pdf_path, prompt) -> dict
+
+The prompt includes:
+  1. Static instructions (output format, guidelines)
+  2. The docstore layout (valid paths)
+
+The LLM returns structured metadata which is parsed into fields.
+
+
+Layout Format
+-------------
+
+Layout is read from docstore's layout.txt file.
+
+Special markers:
+  - "By year": Subfolder for each year (2023, 2024, etc.)
+  - "By company": Subfolder for each company name
+  - "Other": Catchall for documents without good matches
+
+Validation:
+  - Folder names: max 30 chars, alphanumeric + space/hyphen/underscore
+  - Must have "---LAYOUT STARTS HERE---" marker
+  - Paths suggested by LLM are validated against layout
+
+
+Error Handling
+--------------
+
+  - File not found: Raise FileNotFoundError
+  - Invalid file type: Raise ValueError
+  - Layout missing/malformed: Raise ValueError with clear message
+  - LLM API failure: Retry up to 3 times via models/ layer
+  - Invalid path from LLM: Logged, confidence reduced
+
+
+Usage in Filing Workflow
+------------------------
+
+The filing workflow (workflows/filing.py) uses DocSorter:
+
+  1. Download file from inbox to local temp
+  2. Check MetadataCache for existing analysis
+  3. If not cached (or --update): create DocSorter, call sort()
+  4. Save results to cache
+  5. Use suggested_path for copy destination

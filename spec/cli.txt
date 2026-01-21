@@ -1,0 +1,86 @@
+PaperSort Command Line Interface
+=================================
+
+Usage: python papersort.py [OPTIONS]
+
+
+Workflows
+---------
+
+Default (no workflow flag):
+  Process all files in inbox, analyze with LLM, optionally copy to docstore.
+
+--deduplicate
+  Find and merge duplicate company folders in the docstore.
+  Interactive: prompts for confirmation before each merge.
+
+--showlayout
+  Print the docstore layout tree and exit.
+
+
+Input Selection
+---------------
+
+--inbox URI
+  Specify inbox location. Overrides INBOX environment variable.
+  Examples:
+    --inbox=local:/Users/me/inbox
+    --inbox=gdrive:1ABC123xyz
+    --inbox=dropbox:/Documents/ToSort
+
+--file PATH
+  Process a single local file instead of inbox.
+  Example: --file=/Users/me/Downloads/document.pdf
+
+
+Processing Options
+------------------
+
+--update
+  Force reprocessing with LLM even if file is in cache.
+  Useful when layout changes and you want to re-evaluate paths.
+
+--copy
+  Copy processed files to their suggested location in docstore.
+  Without this flag, files are analyzed but not moved.
+
+--verify
+  Use with --copy. Verify files exist at destination before skipping.
+  Without this, trusts the database (faster, fewer network calls).
+
+
+Authentication
+--------------
+
+--auth-dropbox
+  Run Dropbox OAuth authentication flow.
+  One-time setup to enable Dropbox as an inbox source.
+  Prompts for app key/secret, opens browser for authorization.
+
+
+Environment Variables
+---------------------
+
+DOCSTORE (required)
+  Storage URI for the document store.
+  The docstore must contain a layout.txt file at root.
+  Examples:
+    DOCSTORE=local:/Users/me/docstore
+    DOCSTORE=gdrive:1ABC123xyz
+
+INBOX (optional)
+  Default inbox location. Can be overridden with --inbox flag.
+  Examples:
+    INBOX=local:/Users/me/inbox
+    INBOX=dropbox:/Inbox
+
+LLM_PROVIDER (optional)
+  LLM provider for document analysis. Default: "mistral"
+  Options: "mistral", "openai"
+
+MISTRAL_API_KEY (required if using Mistral)
+  API key for Mistral AI.
+
+OPENAI_API_KEY (required if using OpenAI)
+  API key for OpenAI.
+

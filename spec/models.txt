@@ -1,0 +1,141 @@
+LLM Models
+==========
+
+Location: models/
+
+Abstracts LLM providers for document analysis and company name matching.
+
+
+Interface: LLM (models/base.py)
+-------------------------------
+
+Abstract base class for LLM providers.
+
+Properties:
+  name -> str             Provider name ("mistral", "openai")
+
+Methods:
+  analyze_document(pdf_path: str, layout: str) -> dict
+    Analyze PDF and return structured metadata.
+    Returns: {title, year, date, entity, suggested_path, confidence, summary}
+
+  compare_names(name1: str, name2: str) -> bool
+    Check if two company/entity names refer to the same organization.
+
+  find_duplicate_pair(names: List[str]) -> Tuple[str, str] | None
+    Find a pair of duplicate names in a list.
+    Returns first duplicate pair found, or None.
+
+
+Factory Function (models/__init__.py)
+-------------------------------------
+
+create_llm(provider: str) -> LLM
+
+  Creates appropriate LLM instance:
+    "mistral" -> MistralLLM
+    "openai"  -> OpenAILLM
+
+
+MistralLLM (models/mistral.py)
+------------------------------
+
+Uses Mistral AI API via mistralai package.
+
+Configuration:
+  - API key from MISTRAL_API_KEY environment variable
+  - Model: mistral-small-latest (for text tasks)
+  - Model: pixtral-12b-latest (for document analysis with vision)
+
+Document analysis:
+  - Converts PDF pages to images
+  - Sends images with structured prompt
+  - Parses response into metadata dict
+
+
+OpenAILLM (models/openai.py)
+----------------------------
+
+Uses OpenAI API via openai package.
+
+Configuration:
+  - API key from OPENAI_API_KEY environment variable
+  - Model: gpt-4o (for document analysis with vision)
+
+Document analysis:
+  - Converts PDF pages to images
+  - Sends images with structured prompt
+  - Parses response into metadata dict
+
+
+Document Analysis Prompt
+------------------------
+
+The analysis prompt includes:
+
+1. Output format specification:
+   ---
+   TITLE: <short title>
+   SUGGESTED_PATH: <path in layout>
+   CONFIDENCE: <1-10>
+   YEAR: <document year>
+   DATE: <YYYY-MM>
+   ENTITY: <company/person>
+   SUMMARY: <brief description>
+   ---
+
+2. Guidelines:
+   - Title max 10 words
+   - Year is document year (tax year for tax docs)
+   - Suggested path MUST exist in layout
+   - Confidence reflects certainty in path suggestion
+
+3. The complete layout from layout.txt
+
+
+Company Name Matching Prompt
+----------------------------
+
+For detecting duplicate company folders:
+
+  "Does '{name1}' refer to the same company as '{name2}'?
+   Consider abbreviations, punctuation, parent/subsidiary.
+   Respond: MATCH or NO_MATCH"
+
+
+Error Handling
+--------------
+
+  - API key missing: Raise ValueError with clear message
+  - API errors: Retry up to 3 times with exponential backoff
+  - Invalid response format: Retry with clarified prompt
+  - All retries exhausted: Raise LLMError
+
+
+Usage in Workflows
+------------------
+
+Document analysis (workflows/docsorter.py):
+
+  from models import create_llm
+
+  llm = create_llm(provider)
+  result = llm.analyze_document(pdf_path, layout_content)
+  # result = {title, year, entity, suggested_path, ...}
+
+
+Company matching (workflows/folder_matcher.py):
+
+  from models import create_llm
+
+  llm = create_llm(provider)
+  is_match = llm.compare_names("JPMorgan", "J.P. Morgan")  # True
+
+
+Deduplication (workflows/deduplication.py):
+
+  from models import create_llm
+
+  llm = create_llm(provider)
+  pair = llm.find_duplicate_pair(["Chase", "JPMorgan", "JP Morgan"])
+  # pair = ("JPMorgan", "JP Morgan")
