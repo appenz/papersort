@@ -1,21 +1,14 @@
-"""Filing workflow for processing and organizing documents.
-
-Handles:
-- Processing PDFs from various inbox sources (local, Google Drive, Dropbox)
-- Analyzing documents with LLM
-- Copying/moving files to correct docstore locations
-"""
+"""Filing workflow for processing and organizing documents."""
 
 import os
 import re
-from typing import Optional, Tuple, TYPE_CHECKING
+from datetime import date
+from typing import Optional, Tuple
 
+from papersort import PaperSort
 from .docsorter import DocSorter
-from .metadata_cache import MetadataCache, compute_sha256
+from .metadata_cache import compute_sha256
 from .folder_matcher import resolve_company_folder
-
-if TYPE_CHECKING:
-    from storage import StorageDriver
 
 
 def sanitize_filename(name: str) -> str:
@@ -76,79 +69,35 @@ def generate_dest_filename(title: str, year: Optional[int], sha256: str,
     return (f"{base}{ext}", f"{base} [{hash_prefix}]{ext}")
 
 
-def copy_to_docstore(local_path: str, dest_path: str, 
-                     docstore_driver: "StorageDriver") -> bool:
-    """Copy a file to the docstore.
-    
-    Args:
-        local_path: Path to local file to copy
-        dest_path: Destination path within docstore (folder/filename)
-        docstore_driver: Storage driver for the docstore
-        
-    Returns:
-        True if copy succeeded, False otherwise
-    """
+def copy_to_docstore(local_path: str, dest_path: str) -> bool:
+    """Copy a file to the docstore."""
     try:
-        docstore_driver.upload(local_path, dest_path)
+        PaperSort.docstore_driver.upload(local_path, dest_path)
         return True
     except Exception as e:
         print(f"Error copying file: {str(e)}")
         return False
 
 
-def file_exists_in_docstore(dest_path: str, 
-                            docstore_driver: "StorageDriver") -> bool:
-    """Check if a file exists in the docstore.
-    
-    Args:
-        dest_path: Path within docstore to check
-        docstore_driver: Storage driver for the docstore
-        
-    Returns:
-        True if file exists, False otherwise
-    """
-    return docstore_driver.file_exists(dest_path)
+def file_exists_in_docstore(dest_path: str) -> bool:
+    """Check if a file exists in the docstore."""
+    return PaperSort.docstore_driver.file_exists(dest_path)
 
 
-def _move_in_docstore(old_path: str, new_path: str, 
-                      docstore_driver: "StorageDriver") -> bool:
-    """Move a file within the docstore from old_path to new_path.
-    
-    Args:
-        old_path: Current path within docstore
-        new_path: New path within docstore
-        docstore_driver: Storage driver for the docstore
-        
-    Returns:
-        True if move succeeded, False otherwise
-    """
+def _move_in_docstore(old_path: str, new_path: str) -> bool:
+    """Move a file within the docstore."""
     try:
         new_folder = os.path.dirname(new_path)
-        docstore_driver.move(old_path, new_folder)
+        PaperSort.docstore_driver.move(old_path, new_folder)
         return True
     except Exception as e:
         print(f"Error moving file: {str(e)}")
         return False
 
 
-def process_file(pdf_path: str, db: MetadataCache, llm_provider: str,
-                 update: bool = False, cleanup_temp: bool = False,
-                 copy: bool = False, verify: bool = False, 
-                 source: Optional[str] = None,
-                 docstore_driver: Optional["StorageDriver"] = None) -> None:
-    """Process a single PDF file, using cache if available.
-    
-    Args:
-        pdf_path: Path to the PDF file (local path)
-        db: MetadataCache database instance
-        llm_provider: LLM provider to use
-        update: If True, reprocess even if cached
-        cleanup_temp: If True, delete the file after processing (for temp files)
-        copy: If True, copy file to docstore after processing
-        verify: If True, verify file exists at destination even if DB says copied
-        source: Source URI for tracking (e.g., "gdrive:folder_id:path")
-        docstore_driver: Storage driver for the docstore
-    """
+def process_file(pdf_path: str, cleanup_temp: bool = False,
+                 source: Optional[str] = None) -> None:
+    """Process a single PDF file, using cache if available."""
     filename = os.path.basename(pdf_path)
     
     if os.path.getsize(pdf_path) == 0:
@@ -158,7 +107,7 @@ def process_file(pdf_path: str, db: MetadataCache, llm_provider: str,
         return
     
     file_hash = compute_sha256(pdf_path)
-    existing = db.get_by_hash(file_hash)
+    existing = PaperSort.db.get_by_hash(file_hash)
     
     # Track metadata for copy logic
     title = None
@@ -166,7 +115,7 @@ def process_file(pdf_path: str, db: MetadataCache, llm_provider: str,
     suggested_path = None
     
     # --update: force re-evaluation via LLM, ignoring cached metadata
-    if existing and not update:
+    if existing and not PaperSort.update:
         print(f"\033[93mCached: {filename}\033[0m")
         print(f"File: {filename}")
         if existing.get('title'):
@@ -187,11 +136,11 @@ def process_file(pdf_path: str, db: MetadataCache, llm_provider: str,
         try:
             print(f"\033[91mProcessing: {filename}\033[0m")
             doc = DocSorter(pdf_path)
-            if not doc.sort(llm_provider=llm_provider):
+            if not doc.sort(llm_provider=PaperSort.llm_provider_name):
                 if cleanup_temp:
                     os.unlink(pdf_path)
                 return
-            doc.save_to_db(db, source=source)
+            doc.save_to_db(PaperSort.db, source=source)
             print(doc)
             
             title = doc.title
@@ -210,18 +159,14 @@ def process_file(pdf_path: str, db: MetadataCache, llm_provider: str,
             print(f"✗ Path '{suggested_path}' does not exist in layout")
     
     # Copy logic
-    if copy and suggested_path and title and docstore_driver:
+    if PaperSort.copy and suggested_path and title and PaperSort.docstore_driver:
         _handle_copy(
             pdf_path=pdf_path,
             file_hash=file_hash,
             title=title,
             year=year,
             suggested_path=suggested_path,
-            existing=existing,
-            verify=verify,
-            db=db,
-            docstore_driver=docstore_driver,
-            llm_provider=llm_provider
+            existing=existing
         )
     
     if cleanup_temp:
@@ -229,27 +174,12 @@ def process_file(pdf_path: str, db: MetadataCache, llm_provider: str,
 
 
 def _handle_copy(pdf_path: str, file_hash: str, title: str, 
-                 year: Optional[int], suggested_path: str, existing: Optional[dict],
-                 verify: bool, db: MetadataCache, 
-                 docstore_driver: "StorageDriver",
-                 llm_provider: str = "mistral") -> None:
-    """Handle the copy logic for a processed file.
-    
-    Logic:
-    1. Resolve company folder names to prevent duplicates (e.g., "JPMorgan" vs "J.P.Morgan")
-    2. If file already copied to docstore:
-       - If already in correct folder -> skip (or verify if --verify)
-       - If in wrong folder -> move to correct folder
-    3. If file not yet copied -> copy to suggested path
-    """
+                 year: Optional[int], suggested_path: str, 
+                 existing: Optional[dict]) -> None:
+    """Handle the copy logic for a processed file."""
     # Resolve company folder names before copying
     layout_tree = DocSorter._get_layout()
-    resolved_path = resolve_company_folder(
-        suggested_path,
-        layout_tree,
-        docstore_driver,
-        llm_provider
-    )
+    resolved_path = resolve_company_folder(suggested_path, layout_tree)
     if resolved_path != suggested_path:
         suggested_path = resolved_path
     
@@ -264,82 +194,88 @@ def _handle_copy(pdf_path: str, file_hash: str, title: str,
         # Compare current folder with suggested folder
         if current_folder == suggested_path:
             # File is already in the correct folder
-            if not verify:
+            if not PaperSort.verify:
                 print("✓ Already in correct location (skipping)")
                 return
             
             # Verify mode: check file actually exists
-            if file_exists_in_docstore(current_dest_path, docstore_driver):
+            if file_exists_in_docstore(current_dest_path):
                 print(f"✓ Verified: {current_dest_path}")
                 return
             
-            # File missing, re-copy to same location
+            # File missing, re-copy to same location (no log - not a new file)
             print(f"! File missing at {current_dest_path}, re-copying...")
-            if copy_to_docstore(pdf_path, current_dest_path, docstore_driver):
+            if copy_to_docstore(pdf_path, current_dest_path):
                 print(f"✓ Re-copied to: {current_dest_path}")
             return
         
-        # File is in wrong folder - needs to be moved
+        # File is in wrong folder - needs to be moved (no log - not a new file)
         if current_dest_path:
             current_filename = os.path.basename(current_dest_path)
             new_dest_path = f"{suggested_path}/{current_filename}"
             
             print(f"Path changed: {current_folder} -> {suggested_path}")
             
-            if file_exists_in_docstore(current_dest_path, docstore_driver):
+            if file_exists_in_docstore(current_dest_path):
                 # Move the file
-                if _move_in_docstore(current_dest_path, new_dest_path, docstore_driver):
-                    db.update_copied(file_hash, new_dest_path)
+                if _move_in_docstore(current_dest_path, new_dest_path):
+                    PaperSort.db.update_copied(file_hash, new_dest_path)
                     print(f"✓ Moved to: {new_dest_path}")
                 else:
                     print("✗ Failed to move file")
             else:
                 # File missing at old location, copy to new location
                 print("! File missing at old location, copying to new location...")
-                if copy_to_docstore(pdf_path, new_dest_path, docstore_driver):
-                    db.update_copied(file_hash, new_dest_path)
+                if copy_to_docstore(pdf_path, new_dest_path):
+                    PaperSort.db.update_copied(file_hash, new_dest_path)
                     print(f"✓ Copied to: {new_dest_path}")
             return
     
     # File not yet copied: copy to suggested path
+    # This is a NEW file - eligible for --log
     base_dest = f"{suggested_path}/{base_name}"
     hash_dest = f"{suggested_path}/{hash_name}"
     
     # Try base name first (no hash suffix)
-    if not file_exists_in_docstore(base_dest, docstore_driver):
-        if copy_to_docstore(pdf_path, base_dest, docstore_driver):
-            db.update_copied(file_hash, base_dest)
+    if not file_exists_in_docstore(base_dest):
+        if copy_to_docstore(pdf_path, base_dest):
+            PaperSort.db.update_copied(file_hash, base_dest)
             print(f"✓ Copied to: {base_dest}")
+            # Log if enabled (new file)
+            if PaperSort.log:
+                _copy_to_incoming_log(pdf_path, title, year, file_hash)
         return
     
     # Base name exists - check if it's the same file (hash name exists)
-    if file_exists_in_docstore(hash_dest, docstore_driver):
+    if file_exists_in_docstore(hash_dest):
         # File already there with hash suffix
-        db.update_copied(file_hash, hash_dest)
+        PaperSort.db.update_copied(file_hash, hash_dest)
         print(f"✓ Already exists: {hash_dest}")
         return
     
     # Name collision with different file - use hash suffix
-    if copy_to_docstore(pdf_path, hash_dest, docstore_driver):
-        db.update_copied(file_hash, hash_dest)
+    if copy_to_docstore(pdf_path, hash_dest):
+        PaperSort.db.update_copied(file_hash, hash_dest)
         print(f"✓ Copied to: {hash_dest}")
+        # Log if enabled (new file)
+        if PaperSort.log:
+            _copy_to_incoming_log(pdf_path, title, year, file_hash)
 
 
-def process_local_inbox(inbox_path: str, db: MetadataCache, llm_provider: str,
-                        update: bool = False, copy: bool = False, 
-                        verify: bool = False,
-                        docstore_driver: Optional["StorageDriver"] = None) -> None:
-    """Process all PDFs in a local inbox directory recursively.
+def _copy_to_incoming_log(pdf_path: str, title: str, year: Optional[int],
+                          file_hash: str) -> None:
+    """Copy file to --IncomingLog folder with date-prefixed filename."""
+    base_name, _ = generate_dest_filename(title, year, file_hash)
+    date_prefix = date.today().strftime("%Y-%m-%d")
+    log_filename = f"{date_prefix} {base_name}"
+    log_dest = f"--IncomingLog/{log_filename}"
     
-    Args:
-        inbox_path: Local path to inbox directory
-        db: MetadataCache database instance
-        llm_provider: LLM provider to use
-        update: If True, reprocess even if cached
-        copy: If True, copy files to docstore
-        verify: If True, verify files exist at destination
-        docstore_driver: Storage driver for the docstore
-    """
+    if copy_to_docstore(pdf_path, log_dest):
+        print(f"✓ Logged to: {log_dest}")
+
+
+def process_local_inbox(inbox_path: str) -> None:
+    """Process all PDFs in a local inbox directory recursively."""
     if not os.path.exists(inbox_path):
         print(f"Inbox directory '{inbox_path}' does not exist")
         return
@@ -355,26 +291,11 @@ def process_local_inbox(inbox_path: str, db: MetadataCache, llm_provider: str,
                 # Build source URI: local:{inbox_path}:{relative_path}
                 source = f"local:{inbox_path}:{rel_path}"
                 
-                process_file(filepath, db, llm_provider, update=update,
-                           copy=copy, verify=verify, source=source,
-                           docstore_driver=docstore_driver)
+                process_file(filepath, source=source)
 
 
-def process_gdrive_inbox(inbox_folder_id: str, db: MetadataCache, 
-                         llm_provider: str, update: bool = False, 
-                         copy: bool = False, verify: bool = False,
-                         docstore_driver: Optional["StorageDriver"] = None) -> None:
-    """Process all PDFs in a Google Drive inbox folder recursively.
-    
-    Args:
-        inbox_folder_id: Google Drive folder ID for inbox
-        db: MetadataCache database instance
-        llm_provider: LLM provider to use
-        update: If True, reprocess even if cached
-        copy: If True, copy files to docstore
-        verify: If True, verify files exist at destination
-        docstore_driver: Storage driver for the docstore
-    """
+def process_gdrive_inbox(inbox_folder_id: str) -> None:
+    """Process all PDFs in a Google Drive inbox folder recursively."""
     from storage import GDriveDriver
     
     # Create GDrive driver for inbox
@@ -400,9 +321,7 @@ def process_gdrive_inbox(inbox_folder_id: str, db: MetadataCache,
         
         try:
             # Process the file (cleanup_temp=True to delete after)
-            process_file(temp_path, db, llm_provider, update=update, 
-                        cleanup_temp=True, copy=copy, verify=verify, 
-                        source=source, docstore_driver=docstore_driver)
+            process_file(temp_path, cleanup_temp=True, source=source)
         except Exception as e:
             print(f"Error processing {file_info.name}: {str(e)}")
             # Ensure temp file is cleaned up even on error
@@ -410,21 +329,8 @@ def process_gdrive_inbox(inbox_folder_id: str, db: MetadataCache,
                 os.unlink(temp_path)
 
 
-def process_dropbox_inbox(inbox_path: str, db: MetadataCache, 
-                          llm_provider: str, update: bool = False,
-                          copy: bool = False, verify: bool = False,
-                          docstore_driver: Optional["StorageDriver"] = None) -> None:
-    """Process all PDFs in a Dropbox inbox folder recursively.
-    
-    Args:
-        inbox_path: Dropbox folder path (e.g., "/Inbox" or "/Documents/ToSort")
-        db: MetadataCache database instance
-        llm_provider: LLM provider to use
-        update: If True, reprocess even if cached
-        copy: If True, copy files to docstore
-        verify: If True, verify files exist at destination
-        docstore_driver: Storage driver for the docstore
-    """
+def process_dropbox_inbox(inbox_path: str) -> None:
+    """Process all PDFs in a Dropbox inbox folder recursively."""
     from storage import DropboxDriver, StorageError
     
     # Create Dropbox driver
@@ -462,9 +368,7 @@ def process_dropbox_inbox(inbox_path: str, db: MetadataCache,
         
         try:
             # Process the file (cleanup_temp=True to delete after)
-            process_file(temp_path, db, llm_provider, update=update,
-                        cleanup_temp=True, copy=copy, verify=verify,
-                        source=source, docstore_driver=docstore_driver)
+            process_file(temp_path, cleanup_temp=True, source=source)
         except Exception as e:
             print(f"Error processing {file_info.name}: {str(e)}")
             # Ensure temp file is cleaned up even on error

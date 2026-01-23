@@ -1,17 +1,17 @@
 .PHONY: run clean showlayout test dedup
 
 run:
-	uv run papersort.py
+	uv run main.py
 
 run-test-inbox:
-	uv run papersort.py --inbox local:inbox --verify --update
+	uv run main.py --inbox local:inbox --verify --update
 
 
 showlayout:
-	uv run papersort.py --showlayout
+	uv run main.py --showlayout
 
 dedup:
-	uv run papersort.py --deduplicate
+	uv run main.py --deduplicate
 
 test:
 	uv run pytest tests/ -v

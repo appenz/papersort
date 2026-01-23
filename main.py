@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""PaperSort - Document filing assistant.
-
-CLI entry point that dispatches to workflows for document processing.
-"""
+"""PaperSort - Document filing assistant."""
 
 import argparse
 import os
 
+from papersort import PaperSort
 from workflows import (
     DocSorter,
-    MetadataCache,
     process_file,
     process_local_inbox,
     process_gdrive_inbox,
@@ -67,20 +64,17 @@ def load_layout(docstore_uri: str) -> tuple:
     return (driver, driver.display_name)
 
 
-def main(update: bool = False, copy: bool = False, verify: bool = False, 
-         inbox: str = None) -> None:
+def main(inbox: str = None) -> None:
     """Main entry point for batch processing inbox.
     
+    Uses PaperSort class variables for configuration.
+    
     Args:
-        update: If True, reprocess even if cached
-        copy: If True, copy files to docstore after processing
-        verify: If True, verify files exist at destination
         inbox: Inbox URI (overrides INBOX env var if provided)
     """
     # Get configuration from environment
     docstore_uri = os.environ.get('DOCSTORE')
     inbox_uri = inbox or os.environ.get('INBOX')
-    llm_provider = os.environ.get('LLM_PROVIDER', 'mistral')
     
     if not docstore_uri:
         print("Error: DOCSTORE environment variable not set")
@@ -95,38 +89,35 @@ def main(update: bool = False, copy: bool = False, verify: bool = False,
     
     # Load layout from docstore and get driver instance
     docstore_driver, docstore_name = load_layout(docstore_uri)
+    PaperSort.docstore_driver = docstore_driver
     
     # Get inbox display name and type
     inbox_name, inbox_type, inbox_value = get_storage_display_name(inbox_uri)
     
-    print(f"Using LLM provider: {llm_provider}")
+    print(f"Using LLM provider: {PaperSort.llm_provider_name}")
     print(f"Docstore: {docstore_name}")
     print(f"Inbox: {inbox_name}")
-    if update:
+    if PaperSort.update:
         print("Update mode: enabled (ignoring cache)")
-    if copy:
-        print("Copy mode: enabled" + (" (with verify)" if verify else ""))
+    if PaperSort.copy:
+        print("Copy mode: enabled" + (" (with verify)" if PaperSort.verify else ""))
+    if PaperSort.log:
+        print("Log mode: enabled (logging to --IncomingLog)")
     
     # Initialize database
-    db = MetadataCache()
+    PaperSort.init_db()
     
     # Process inbox based on type
     if inbox_type == "gdrive":
-        process_gdrive_inbox(inbox_value, db, llm_provider, update=update,
-                            copy=copy, verify=verify,
-                            docstore_driver=docstore_driver)
+        process_gdrive_inbox(inbox_value)
     elif inbox_type == "local":
-        process_local_inbox(inbox_value, db, llm_provider, update=update,
-                           copy=copy, verify=verify,
-                           docstore_driver=docstore_driver)
+        process_local_inbox(inbox_value)
     elif inbox_type == "dropbox":
-        process_dropbox_inbox(inbox_value, db, llm_provider, update=update,
-                             copy=copy, verify=verify,
-                             docstore_driver=docstore_driver)
+        process_dropbox_inbox(inbox_value)
     else:
         print(f"Unknown inbox storage type: {inbox_type}")
     
-    db.close()
+    PaperSort.close()
 
 
 if __name__ == "__main__":
@@ -141,6 +132,8 @@ if __name__ == "__main__":
                        help="Copy files to docstore after processing")
     parser.add_argument("--verify", action="store_true", 
                        help="Verify files exist at destination (use with --copy)")
+    parser.add_argument("--log", action="store_true",
+                       help="Log incoming files to --IncomingLog folder (use with --copy)")
     parser.add_argument("--deduplicate", action="store_true", 
                        help="Find and merge duplicate company folders in the docstore")
     parser.add_argument("--inbox", type=str, 
@@ -181,14 +174,14 @@ if __name__ == "__main__":
             print("Example: DOCSTORE=gdrive:abc123 or DOCSTORE=local:docstore")
         else:
             docstore_driver, docstore_name = load_layout(docstore_uri)
-            
-            llm_provider = os.environ.get('LLM_PROVIDER', 'mistral')
+            PaperSort.docstore_driver = docstore_driver
+            PaperSort.llm_provider_name = os.environ.get('LLM_PROVIDER', 'mistral')
             
             print(f"Docstore: {docstore_name}")
-            print(f"Using LLM provider: {llm_provider}")
+            print(f"Using LLM provider: {PaperSort.llm_provider_name}")
             print("Starting deduplication...")
             
-            deduplicate_company_folders(docstore_driver, llm_provider)
+            deduplicate_company_folders()
     
     elif args.showlayout:
         if not docstore_uri:
@@ -206,20 +199,24 @@ if __name__ == "__main__":
         else:
             docstore_driver, docstore_name = load_layout(docstore_uri)
             
-            print(f"Docstore: {docstore_name}")
-            if args.copy:
-                print("Copy mode: enabled" + (" (with verify)" if args.verify else ""))
+            # Configure PaperSort from args
+            PaperSort.configure(args, docstore_driver)
             
-            db = MetadataCache()
-            llm_provider = os.environ.get('LLM_PROVIDER', 'mistral')
+            print(f"Docstore: {docstore_name}")
+            if PaperSort.copy:
+                print("Copy mode: enabled" + (" (with verify)" if PaperSort.verify else ""))
+            if PaperSort.log:
+                print("Log mode: enabled (logging to --IncomingLog)")
+            
+            PaperSort.init_db()
             
             # Build source URI for single file (local file)
             source = f"local::{os.path.abspath(args.file)}"
             
-            process_file(args.file, db, llm_provider, update=args.update,
-                        copy=args.copy, verify=args.verify, source=source,
-                        docstore_driver=docstore_driver)
-            db.close()
+            process_file(args.file, source=source)
+            PaperSort.close()
     
     else:
-        main(update=args.update, copy=args.copy, verify=args.verify, inbox=args.inbox)
+        # Configure PaperSort from args (docstore_driver set later in main())
+        PaperSort.configure(args)
+        main(inbox=args.inbox)
