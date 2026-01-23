@@ -1,12 +1,12 @@
 """
-Unit tests for GDrive class.
+Unit tests for GDriveDriver class.
 Tests run against the /appenz_test folder and clean up when done.
 Tests are skipped if credentials are not present.
 """
 import pytest
 import os
 import tempfile
-from gdrive.gdrive import GDrive, GDriveError
+from storage import GDriveDriver, StorageError
 
 # Test folder to use (all tests create/cleanup within this folder)
 TEST_ROOT = "appenz_test"
@@ -27,7 +27,7 @@ def drive():
         if not folder_id:
             pytest.skip("No DOCSTORE or GDRIVE_FOLDER_ID environment variable set")
         
-        d = GDrive(root_folder_id=folder_id)
+        d = GDriveDriver(folder_id)
         # Ensure test root folder exists
         d.create_folder("", TEST_ROOT)
         yield d
@@ -45,9 +45,9 @@ def cleanup(drive):
         for item in items:
             try:
                 drive.delete_item(f"{TEST_ROOT}/{item['name']}")
-            except GDriveError:
+            except StorageError:
                 pass
-    except GDriveError:
+    except StorageError:
         pass
 
 
@@ -194,7 +194,7 @@ class TestDownloadFile:
 
     def test_download_nonexistent_file(self, drive):
         """Test downloading non-existent file raises error."""
-        with pytest.raises(GDriveError):
+        with pytest.raises(StorageError):
             drive.download_file(f"{TEST_ROOT}/NonExistent.txt", "/tmp/test.txt")
 
 
@@ -229,5 +229,5 @@ class TestDeleteItem:
 
     def test_delete_nonexistent_item(self, drive):
         """Test deleting non-existent item raises error."""
-        with pytest.raises(GDriveError):
+        with pytest.raises(StorageError):
             drive.delete_item(f"{TEST_ROOT}/NonExistent12345")

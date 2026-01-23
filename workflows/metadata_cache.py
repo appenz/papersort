@@ -1,3 +1,8 @@
+"""Metadata cache for document analysis results.
+
+Stores LLM-extracted metadata in SQLite to avoid re-processing documents.
+"""
+
 import os
 import sqlite3
 import hashlib
@@ -17,7 +22,13 @@ def compute_sha256(file_path: str) -> str:
     return sha256_hash.hexdigest()
 
 
-class DocIndex:
+class MetadataCache:
+    """SQLite cache for document metadata.
+    
+    Stores analysis results keyed by file hash to avoid re-processing.
+    Also tracks filing state (source, copied, dest_path).
+    """
+    
     def __init__(self, db_path: str = DB_PATH) -> None:
         # Ensure directory exists
         db_dir = os.path.dirname(db_path)
@@ -141,3 +152,7 @@ class DocIndex:
     def close(self) -> None:
         """Close the database connection."""
         self.conn.close()
+
+
+# Backwards compatibility alias
+DocIndex = MetadataCache

@@ -22,6 +22,11 @@ Methods:
   compare_names(name1: str, name2: str) -> bool
     Check if two company/entity names refer to the same organization.
 
+  find_matching_folder(new_name: str, existing_folders: List[str]) -> str | None
+    Check if new_name matches any existing folder (spelling variation).
+    Sends ALL folders to LLM in single call for full context.
+    Returns matching folder name or None.
+
   find_duplicate_pair(names: List[str]) -> Tuple[str, str] | None
     Find a pair of duplicate names in a list.
     Returns first duplicate pair found, or None.
@@ -93,14 +98,16 @@ The analysis prompt includes:
 3. The complete layout from layout.txt
 
 
-Company Name Matching Prompt
-----------------------------
+Folder Matching Prompt
+----------------------
 
-For detecting duplicate company folders:
+For matching a new folder name against existing folders:
 
-  "Does '{name1}' refer to the same company as '{name2}'?
-   Consider abbreviations, punctuation, parent/subsidiary.
-   Respond: MATCH or NO_MATCH"
+  - Sends new name + ALL existing folders in single LLM call
+  - Matches spelling variations: "JPMorgan" = "J.P. Morgan", "ATT" = "AT&T"
+  - Does NOT match different companies with similar words
+  - If both "Chase" and "JPMorgan" exist separately, "JPMorgan Chase" matches neither
+  - Conservative: when in doubt, NO_MATCH (avoids false positives)
 
 
 Error Handling
@@ -124,12 +131,18 @@ Document analysis (workflows/docsorter.py):
   # result = {title, year, entity, suggested_path, ...}
 
 
-Company matching (workflows/folder_matcher.py):
+Folder matching (workflows/folder_matcher.py):
 
   from models import create_llm
 
   llm = create_llm(provider)
-  is_match = llm.compare_names("JPMorgan", "J.P. Morgan")  # True
+  match = llm.find_matching_folder("GS", ["Goldman Sachs", "Chase", "Citi"])
+  # match = "Goldman Sachs"
+
+  Folder resolution gathers ALL leaf folders under the top-level category
+  (both dynamic "By company" and static layout folders) to ensure complete
+  context. No arbitrary limits - missing a valid match is worse than a
+  longer prompt.
 
 
 Deduplication (workflows/deduplication.py):

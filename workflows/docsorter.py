@@ -1,43 +1,27 @@
+"""Document analysis and sorting.
+
+Uses LLM to analyze PDF documents and suggest filing paths based on layout.
+"""
+
 import os
-from pathlib import Path
 from typing import Dict, Optional, List, Union, TYPE_CHECKING
-from datetime import date
-from .docindex import compute_sha256
+
+from .metadata_cache import compute_sha256
 
 if TYPE_CHECKING:
-    from .docindex import DocIndex
+    from .metadata_cache import MetadataCache
+
 
 class DocSorter:
+    """Analyzes documents and suggests filing paths.
+    
+    Uses an LLM to extract metadata from PDFs and match them to
+    paths in the layout structure.
+    """
+    
     _layout_tree: Optional[Dict[str, Union[Dict[str, Dict], Dict[str, str]]]] = None
     _layout_path: str = os.path.join('docstore', 'layout.txt')
-    
-    prompt = "Please echo back the following text: ERROR, the prompt was not set correctly."
-
-    static_prompt = """"
-You are a helpful assistant analyzing a document. Your output should have exactly the following format:
-
----
-TITLE: <a short title>
-SUGGESTED_PATH: <where the document should be filed>
-CONFIDENCE: <confidence in the suggested path on a scale of 1 (lowest) to 10 (highest)>
-YEAR: <the year the document is about>
-DATE: <the date the document was created or sent>
-ENTITY: <the entity the document is about>
-SUMMARY: <a short summary of the document, not more than 100 words>
----
-
-Some specific guidelines:
-- Title is a short title of the document, not more than 10 words.
-- The year is the year the document is about, which may be different from the year in the date. For a tax document, it is the tax year.
-- Entity is often the name of the company or organization the document is from or to. For a bank statement, it is the bank's name.
-- Summary is a short summary of the document, not more than 100 words.
-- Suggested path is the most important part of the output. It is where the document should be filed.
-
-MOST IMPORTANT: Make sure the suggested path is a valid path in the layout below! Do not invent paths that are not in the layout.
-
-The layout description for the document store follow after this line.
---- 
-"""
+    layout: str = ""  # Raw layout content for LLM
 
     @classmethod
     def set_layout_path(cls, path: str) -> None:
@@ -295,21 +279,31 @@ The layout description for the document store follow after this line.
         Returns:
             True if successful, False if failed to get valid path.
         """
-        if llm_provider == "openai":
-            from .llm_openai import OpenAILLM
-            llm = OpenAILLM()
-        else:
-            from .llm_mistral import MistralLLM
-            llm = MistralLLM()
-        return llm.sort(self) 
-
-    def get_static_prompt(self) -> str:
-       return DocSorter.static_prompt 
+        from models import create_llm
+        
+        llm = create_llm(llm_provider)
+        result = llm.analyze_document(
+            pdf_path=self.previous_path,
+            layout=DocSorter.layout,
+            hint=self.previous_path,
+            path_validator=DocSorter.path_exists
+        )
+        
+        if result is None:
+            return False
+        
+        # Populate metadata from analysis result
+        self.title = result.title
+        self.suggested_path = result.suggested_path
+        self.confidence = result.confidence
+        self.year = result.year
+        self.date = result.date
+        self.entity = result.entity
+        self.summary = result.summary
+        
+        return True
     
-    def get_layout(self) -> str:
-        return DocSorter.layout
-    
-    def save_to_db(self, db: "DocIndex", path: Optional[str] = None, 
+    def save_to_db(self, db: "MetadataCache", path: Optional[str] = None, 
                    source: Optional[str] = None) -> None:
         """Save document metadata to the database."""
         metadata = {
