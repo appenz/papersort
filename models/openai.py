@@ -110,9 +110,21 @@ class OpenAILLM(LLM):
                   f"asking LLM to retry ({attempt + 1}/{MAX_PATH_RETRIES})...")
             
             messages.append({"role": "assistant", "content": response_text})
+            
+            # Build specific feedback based on the invalid path
+            feedback = "This is incorrect, the path that you suggested is not valid. "
+            suggested = result_dict['SUGGESTED_PATH']
+            if suggested.lower().endswith('by company'):
+                feedback += "You used 'By company' literally - you must replace it with the actual company/entity name (e.g., 'Medical & Health/Bills/Chase' not 'Medical & Health/Bills/By company')."
+            elif suggested.lower().endswith('by year'):
+                feedback += "You used 'By year' literally - you must replace it with the actual year (e.g., 'Taxes/Federal/2024' not 'Taxes/Federal/By year')."
+            else:
+                feedback += "The path structure must match the layout. Where the layout shows 'By company', use the actual company/entity name. Where it shows 'By year', use the actual year. You may create new company or year folders as needed."
+            feedback += " Try again."
+            
             messages.append({
                 "role": "user",
-                "content": "This is incorrect, the path that you suggested is not valid. Try again."
+                "content": feedback
             })
         
         print(f"Failed to get valid path after {MAX_PATH_RETRIES} attempts, routing to Other.")

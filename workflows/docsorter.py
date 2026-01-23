@@ -201,6 +201,12 @@ class DocSorter:
         if child_folders:
             print(f"Path '{path}' is not a leaf directory, has children: {child_folders}")
             return False
+        
+        # Reject paths that end with placeholder names - these must be replaced with actual values
+        last_part = parts[-1].lower() if parts else ""
+        if last_part in ("by company", "by year"):
+            print(f"Path '{path}' ends with placeholder '{parts[-1]}' - must be replaced with actual value")
+            return False
             
         return True
 

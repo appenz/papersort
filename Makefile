@@ -3,6 +3,10 @@
 run:
 	uv run papersort.py
 
+run-test-inbox:
+	uv run papersort.py --inbox local:inbox --verify --update
+
+
 showlayout:
 	uv run papersort.py --showlayout
 
