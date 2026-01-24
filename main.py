@@ -4,7 +4,7 @@
 import argparse
 import os
 
-from papersort import PaperSort
+from papersort import PaperSort, __version__
 from workflows import (
     DocSorter,
     process_file,
@@ -64,8 +64,49 @@ def load_layout(docstore_uri: str) -> tuple:
     return (driver, driver.display_name)
 
 
+def run_processing(inbox_uri: str, docstore_uri: str) -> None:
+    """Run the document processing workflow.
+    
+    Args:
+        inbox_uri: Inbox URI (e.g., 'gdrive:folder_id', 'local:path')
+        docstore_uri: Docstore URI
+    """
+    # Load layout from docstore and get driver instance
+    docstore_driver, docstore_name = load_layout(docstore_uri)
+    PaperSort.docstore_driver = docstore_driver
+    
+    # Get inbox display name and type
+    inbox_name, inbox_type, inbox_value = get_storage_display_name(inbox_uri)
+    
+    PaperSort.print_right(f"Using LLM provider: {PaperSort.llm_provider_name}")
+    PaperSort.print_right(f"Docstore: {docstore_name}")
+    PaperSort.print_right(f"Inbox: {inbox_name}")
+    if PaperSort.update:
+        PaperSort.print_right("Update mode: enabled (ignoring cache)")
+    if PaperSort.copy:
+        PaperSort.print_right("Copy mode: enabled" + (" (with verify)" if PaperSort.verify else ""))
+    if PaperSort.log:
+        PaperSort.print_right("Log mode: enabled (logging to --IncomingLog)")
+    
+    # Initialize database
+    PaperSort.init_db()
+    
+    # Process inbox based on type
+    if inbox_type == "gdrive":
+        process_gdrive_inbox(inbox_value)
+    elif inbox_type == "local":
+        process_local_inbox(inbox_value)
+    elif inbox_type == "dropbox":
+        process_dropbox_inbox(inbox_value)
+    else:
+        PaperSort.print_right(f"Unknown inbox storage type: {inbox_type}")
+    
+    PaperSort.close()
+    PaperSort.print_right("\n[green]Processing complete![/green]")
+
+
 def main(inbox: str = None) -> None:
-    """Main entry point for batch processing inbox.
+    """Main entry point for batch processing inbox (CLI mode).
     
     Uses PaperSort class variables for configuration.
     
@@ -87,37 +128,47 @@ def main(inbox: str = None) -> None:
         print("Example: --inbox=gdrive:xyz789 or --inbox=local:inbox")
         return
     
-    # Load layout from docstore and get driver instance
-    docstore_driver, docstore_name = load_layout(docstore_uri)
-    PaperSort.docstore_driver = docstore_driver
+    run_processing(inbox_uri, docstore_uri)
+
+
+def main_tui(inbox: str = None) -> None:
+    """Main entry point for batch processing inbox (TUI mode).
     
-    # Get inbox display name and type
-    inbox_name, inbox_type, inbox_value = get_storage_display_name(inbox_uri)
+    Args:
+        inbox: Inbox URI (overrides INBOX env var if provided)
+    """
+    from textui import PaperSortApp
     
-    print(f"Using LLM provider: {PaperSort.llm_provider_name}")
-    print(f"Docstore: {docstore_name}")
-    print(f"Inbox: {inbox_name}")
-    if PaperSort.update:
-        print("Update mode: enabled (ignoring cache)")
-    if PaperSort.copy:
-        print("Copy mode: enabled" + (" (with verify)" if PaperSort.verify else ""))
-    if PaperSort.log:
-        print("Log mode: enabled (logging to --IncomingLog)")
+    # Get configuration from environment
+    docstore_uri = os.environ.get('DOCSTORE')
+    inbox_uri = inbox or os.environ.get('INBOX')
     
-    # Initialize database
-    PaperSort.init_db()
+    if not docstore_uri:
+        print("Error: DOCSTORE environment variable not set")
+        print("Example: DOCSTORE=gdrive:abc123 or DOCSTORE=local:docstore")
+        return
     
-    # Process inbox based on type
-    if inbox_type == "gdrive":
-        process_gdrive_inbox(inbox_value)
-    elif inbox_type == "local":
-        process_local_inbox(inbox_value)
-    elif inbox_type == "dropbox":
-        process_dropbox_inbox(inbox_value)
-    else:
-        print(f"Unknown inbox storage type: {inbox_type}")
+    if not inbox_uri:
+        print("Error: INBOX not specified")
+        print("Use --inbox or set INBOX environment variable")
+        print("Example: --inbox=gdrive:xyz789 or --inbox=local:inbox")
+        return
     
-    PaperSort.close()
+    # Get display names for header (before starting TUI)
+    inbox_name, _, _ = get_storage_display_name(inbox_uri)
+    _, docstore_name = load_layout(docstore_uri)
+    
+    # Create processing function to pass to app
+    def process_func():
+        run_processing(inbox_uri, docstore_uri)
+    
+    # Create and run the TUI app
+    app = PaperSortApp(
+        source=inbox_name, 
+        destination=docstore_name,
+        process_func=process_func
+    )
+    app.run()
 
 
 if __name__ == "__main__":
@@ -140,6 +191,8 @@ if __name__ == "__main__":
                        help="Inbox URI (e.g., gdrive:folder_id, local:path, or dropbox:/path)")
     parser.add_argument("--auth-dropbox", action="store_true",
                        help="Authenticate with Dropbox (one-time setup)")
+    parser.add_argument("--cli", action="store_true",
+                       help="Use CLI output instead of TextUI (default is TextUI)")
     args = parser.parse_args()
 
     # Handle --auth-dropbox first (doesn't need DOCSTORE)
@@ -219,4 +272,10 @@ if __name__ == "__main__":
     else:
         # Configure PaperSort from args (docstore_driver set later in main())
         PaperSort.configure(args)
-        main(inbox=args.inbox)
+        
+        if args.cli:
+            # CLI mode - plain text output
+            main(inbox=args.inbox)
+        else:
+            # TUI mode (default) - Textual interface
+            main_tui(inbox=args.inbox)

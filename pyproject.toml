@@ -11,6 +11,7 @@ dependencies = [
     "mistralai>=1.6.0",
     "openai>=1.100.0",
     "pytest>=8.3.5",
+    "textual>=7.3.0",
 ]
 
 [tool.pytest.ini_options]

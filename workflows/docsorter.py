@@ -268,7 +268,8 @@ class DocSorter:
         if self.entity:
             parts.append(f"Entity: {self.entity}")
         if self.suggested_path:
-            parts.append(f"Path [{self.confidence:2}]: {self.suggested_path}")
+            conf_pct = (self.confidence or 0) * 10
+            parts.append(f"Path ({conf_pct}%): {self.suggested_path}")
         if self.summary:
             # Show first 100 characters of summary with ellipsis if longer
             preview = self.summary[:100] + ('...' if len(self.summary) > 100 else '')

@@ -2,7 +2,7 @@
 
 import os
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, Tuple
 
 from papersort import PaperSort
@@ -75,7 +75,7 @@ def copy_to_docstore(local_path: str, dest_path: str) -> bool:
         PaperSort.docstore_driver.upload(local_path, dest_path)
         return True
     except Exception as e:
-        print(f"Error copying file: {str(e)}")
+        PaperSort.print_right(f"Error copying file: {str(e)}")
         return False
 
 
@@ -91,7 +91,7 @@ def _move_in_docstore(old_path: str, new_path: str) -> bool:
         PaperSort.docstore_driver.move(old_path, new_folder)
         return True
     except Exception as e:
-        print(f"Error moving file: {str(e)}")
+        PaperSort.print_right(f"Error moving file: {str(e)}")
         return False
 
 
@@ -101,7 +101,7 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
     filename = os.path.basename(pdf_path)
     
     if os.path.getsize(pdf_path) == 0:
-        print(f"Skipping empty file: {filename}")
+        PaperSort.print_right(f"Skipping empty file: {filename}")
         if cleanup_temp:
             os.unlink(pdf_path)
         return
@@ -116,47 +116,50 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
     
     # --update: force re-evaluation via LLM, ignoring cached metadata
     if existing and not PaperSort.update:
-        print(f"\033[93mCached: {filename}\033[0m")
-        print(f"File: {filename}")
+        PaperSort.print_right(f"[yellow]Cached: {filename}[/yellow]")
+        PaperSort.print_right(f"File: {filename}")
         if existing.get('title'):
-            print(f"Title: {existing['title']} {existing.get('year', '')}")
+            PaperSort.print_right(f"Title: {existing['title']} {existing.get('year', '')}")
         if existing.get('entity'):
-            print(f"Entity: {existing['entity']}")
+            PaperSort.print_right(f"Entity: {existing['entity']}")
         if existing.get('suggested_path'):
-            conf = existing.get('confidence', '')
-            print(f"Path [{conf:2}]: {existing['suggested_path']}")
+            conf = existing.get('confidence', 0) or 0
+            PaperSort.print_right(f"Path ({conf * 10}%): {existing['suggested_path']}")
         if existing.get('summary'):
             preview = existing['summary'][:100] + ('...' if len(existing['summary']) > 100 else '')
-            print(f"Summary: {preview}")
+            PaperSort.print_right(f"Summary: {preview}")
         
         title = existing.get('title')
         year = existing.get('year')
         suggested_path = existing.get('suggested_path')
     else:
         try:
-            print(f"\033[91mProcessing: {filename}\033[0m")
+            PaperSort.print_right(f"[red]Processing: {filename}[/red]")
             doc = DocSorter(pdf_path)
             if not doc.sort(llm_provider=PaperSort.llm_provider_name, inbox_path=inbox_path):
                 if cleanup_temp:
                     os.unlink(pdf_path)
                 return
             doc.save_to_db(PaperSort.db, source=source)
-            print(doc)
+            PaperSort.print_right(str(doc))
             
             title = doc.title
             year = doc.year
             suggested_path = doc.suggested_path
         except Exception as e:
-            print(f"Error processing {filename}: {str(e)}")
+            PaperSort.print_right(f"Error processing {filename}: {str(e)}")
             if cleanup_temp:
                 os.unlink(pdf_path)
             return
     
     if suggested_path:
         if DocSorter.path_exists(suggested_path):
-            print(f"✓ Path '{suggested_path}' exists in layout")
+            PaperSort.print_right(f"✓ Path '{suggested_path}' exists in layout")
         else:
-            print(f"✗ Path '{suggested_path}' does not exist in layout")
+            PaperSort.print_right(f"✗ Path '{suggested_path}' does not exist in layout")
+        
+        # Log to filing panel (left side) - shows what would be/was filed
+        _log_filing(title, year, inbox_path, suggested_path)
     
     # Copy logic
     if PaperSort.copy and suggested_path and title and PaperSort.docstore_driver:
@@ -166,7 +169,8 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
             title=title,
             year=year,
             suggested_path=suggested_path,
-            existing=existing
+            existing=existing,
+            inbox_path=inbox_path
         )
     
     if cleanup_temp:
@@ -175,7 +179,7 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
 
 def _handle_copy(pdf_path: str, file_hash: str, title: str, 
                  year: Optional[int], suggested_path: str, 
-                 existing: Optional[dict]) -> None:
+                 existing: Optional[dict], inbox_path: str = "") -> None:
     """Handle the copy logic for a processed file."""
     # Resolve company folder names before copying
     layout_tree = DocSorter._get_layout()
@@ -195,18 +199,18 @@ def _handle_copy(pdf_path: str, file_hash: str, title: str,
         if current_folder == suggested_path:
             # File is already in the correct folder
             if not PaperSort.verify:
-                print("✓ Already in correct location (skipping)")
+                PaperSort.print_right("✓ Already in correct location (skipping)")
                 return
             
             # Verify mode: check file actually exists
             if file_exists_in_docstore(current_dest_path):
-                print(f"✓ Verified: {current_dest_path}")
+                PaperSort.print_right(f"✓ Verified: {current_dest_path}")
                 return
             
             # File missing, re-copy to same location (no log - not a new file)
-            print(f"! File missing at {current_dest_path}, re-copying...")
+            PaperSort.print_right(f"! File missing at {current_dest_path}, re-copying...")
             if copy_to_docstore(pdf_path, current_dest_path):
-                print(f"✓ Re-copied to: {current_dest_path}")
+                PaperSort.print_right(f"✓ Re-copied to: {current_dest_path}")
             return
         
         # File is in wrong folder - needs to be moved (no log - not a new file)
@@ -214,21 +218,21 @@ def _handle_copy(pdf_path: str, file_hash: str, title: str,
             current_filename = os.path.basename(current_dest_path)
             new_dest_path = f"{suggested_path}/{current_filename}"
             
-            print(f"Path changed: {current_folder} -> {suggested_path}")
+            PaperSort.print_right(f"Path changed: {current_folder} -> {suggested_path}")
             
             if file_exists_in_docstore(current_dest_path):
                 # Move the file
                 if _move_in_docstore(current_dest_path, new_dest_path):
                     PaperSort.db.update_copied(file_hash, new_dest_path)
-                    print(f"✓ Moved to: {new_dest_path}")
+                    PaperSort.print_right(f"✓ Moved to: {new_dest_path}")
                 else:
-                    print("✗ Failed to move file")
+                    PaperSort.print_right("✗ Failed to move file")
             else:
                 # File missing at old location, copy to new location
-                print("! File missing at old location, copying to new location...")
+                PaperSort.print_right("! File missing at old location, copying to new location...")
                 if copy_to_docstore(pdf_path, new_dest_path):
                     PaperSort.db.update_copied(file_hash, new_dest_path)
-                    print(f"✓ Copied to: {new_dest_path}")
+                    PaperSort.print_right(f"✓ Copied to: {new_dest_path}")
             return
     
     # File not yet copied: copy to suggested path
@@ -240,7 +244,7 @@ def _handle_copy(pdf_path: str, file_hash: str, title: str,
     if not file_exists_in_docstore(base_dest):
         if copy_to_docstore(pdf_path, base_dest):
             PaperSort.db.update_copied(file_hash, base_dest)
-            print(f"✓ Copied to: {base_dest}")
+            PaperSort.print_right(f"✓ Copied to: {base_dest}")
             # Log if enabled (new file)
             if PaperSort.log:
                 _copy_to_incoming_log(pdf_path, title, year, file_hash)
@@ -250,16 +254,30 @@ def _handle_copy(pdf_path: str, file_hash: str, title: str,
     if file_exists_in_docstore(hash_dest):
         # File already there with hash suffix
         PaperSort.db.update_copied(file_hash, hash_dest)
-        print(f"✓ Already exists: {hash_dest}")
+        PaperSort.print_right(f"✓ Already exists: {hash_dest}")
         return
     
     # Name collision with different file - use hash suffix
     if copy_to_docstore(pdf_path, hash_dest):
         PaperSort.db.update_copied(file_hash, hash_dest)
-        print(f"✓ Copied to: {hash_dest}")
+        PaperSort.print_right(f"✓ Copied to: {hash_dest}")
         # Log if enabled (new file)
         if PaperSort.log:
             _copy_to_incoming_log(pdf_path, title, year, file_hash)
+
+
+def _log_filing(title: str, year: Optional[int], old_path: str, new_path: str) -> None:
+    """Log a filing to the left panel."""
+    timestamp = datetime.now().strftime("%H:%M")
+    title_with_year = f"{title} {year}" if year else title
+    # Extract just the directory from old_path (remove filename if present)
+    old_dir = os.path.dirname(old_path) if '/' in old_path else old_path
+    # If old_dir is empty (file was at root), use the original path
+    if not old_dir:
+        old_dir = old_path.split('/')[0] if '/' in old_path else old_path
+    line1 = f"{timestamp} {title_with_year}"
+    line2 = f"  {old_dir} → {new_path}"
+    PaperSort.print_left(line1, line2)
 
 
 def _copy_to_incoming_log(pdf_path: str, title: str, year: Optional[int],
@@ -271,30 +289,42 @@ def _copy_to_incoming_log(pdf_path: str, title: str, year: Optional[int],
     log_dest = f"--IncomingLog/{log_filename}"
     
     if copy_to_docstore(pdf_path, log_dest):
-        print(f"✓ Logged to: {log_dest}")
+        PaperSort.print_right(f"✓ Logged to: {log_dest}")
 
 
 def process_local_inbox(inbox_path: str) -> None:
     """Process all PDFs in a local inbox directory recursively."""
     if not os.path.exists(inbox_path):
-        print(f"Inbox directory '{inbox_path}' does not exist")
+        PaperSort.print_right(f"Inbox directory '{inbox_path}' does not exist")
         return
     
-    # Use os.walk for recursive traversal
+    # First, collect all PDF files
+    pdf_files = []
     for root, dirs, files in os.walk(inbox_path):
         for filename in files:
             if filename.lower().endswith('.pdf'):
-                filepath = os.path.join(root, filename)
-                rel_path = os.path.relpath(filepath, inbox_path)
-                print(f"\n--- {rel_path} ---")
-                
-                # Build source URI: local:{inbox_path}:{relative_path}
-                source = f"local:{inbox_path}:{rel_path}"
-                # Human-readable path: inbox folder name + relative path
-                inbox_name = os.path.basename(inbox_path)
-                readable_path = f"{inbox_name}/{rel_path}" if rel_path != filename else inbox_name
-                
-                process_file(filepath, source=source, inbox_path=readable_path)
+                pdf_files.append(os.path.join(root, filename))
+    
+    if not pdf_files:
+        PaperSort.print_right("No PDF files found in inbox")
+        return
+    
+    PaperSort.print_right(f"Found {len(pdf_files)} PDF files in inbox")
+    PaperSort.set_total_files(len(pdf_files))
+    
+    # Process each file
+    for i, filepath in enumerate(pdf_files, 1):
+        PaperSort.set_progress(i, len(pdf_files))
+        rel_path = os.path.relpath(filepath, inbox_path)
+        PaperSort.print_right(f"\n--- {rel_path} ---")
+        
+        # Build source URI: local:{inbox_path}:{relative_path}
+        source = f"local:{inbox_path}:{rel_path}"
+        # Human-readable path: inbox folder name + relative path
+        inbox_name = os.path.basename(inbox_path)
+        readable_path = f"{inbox_name}/{rel_path}" if rel_path != os.path.basename(filepath) else inbox_name
+        
+        process_file(filepath, source=source, inbox_path=readable_path)
 
 
 def process_gdrive_inbox(inbox_folder_id: str) -> None:
@@ -308,16 +338,18 @@ def process_gdrive_inbox(inbox_folder_id: str) -> None:
     pdf_files = inbox_driver.list_files(recursive=True, extension=".pdf")
     
     if not pdf_files:
-        print("No PDF files found in inbox")
+        PaperSort.print_right("No PDF files found in inbox")
         return
     
-    print(f"Found {len(pdf_files)} PDF files in inbox")
+    PaperSort.print_right(f"Found {len(pdf_files)} PDF files in inbox")
+    PaperSort.set_total_files(len(pdf_files))
     
     # Get human-readable inbox name
     inbox_name = inbox_driver._root_folder_name or "Inbox"
     
-    for file_info in pdf_files:
-        print(f"\n--- {file_info.path} ---")
+    for i, file_info in enumerate(pdf_files, 1):
+        PaperSort.set_progress(i, len(pdf_files))
+        PaperSort.print_right(f"\n--- {file_info.path} ---")
         
         # Build source URI: gdrive:{folder_id}:{path}
         source = f"gdrive:{inbox_folder_id}:{file_info.path}"
@@ -331,7 +363,7 @@ def process_gdrive_inbox(inbox_folder_id: str) -> None:
             # Process the file (cleanup_temp=True to delete after)
             process_file(temp_path, cleanup_temp=True, source=source, inbox_path=readable_path)
         except Exception as e:
-            print(f"Error processing {file_info.name}: {str(e)}")
+            PaperSort.print_right(f"Error processing {file_info.name}: {str(e)}")
             # Ensure temp file is cleaned up even on error
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
@@ -345,27 +377,29 @@ def process_dropbox_inbox(inbox_path: str) -> None:
     try:
         dbx = DropboxDriver(inbox_path)
     except StorageError as e:
-        print(f"Error connecting to Dropbox: {str(e)}")
+        PaperSort.print_right(f"Error connecting to Dropbox: {str(e)}")
         return
     
     # Get all PDFs recursively
     try:
         pdf_files = dbx.list_files(recursive=True, extension=".pdf")
     except StorageError as e:
-        print(f"Error listing Dropbox folder: {str(e)}")
+        PaperSort.print_right(f"Error listing Dropbox folder: {str(e)}")
         return
     
     if not pdf_files:
-        print("No PDF files found in inbox")
+        PaperSort.print_right("No PDF files found in inbox")
         return
     
-    print(f"Found {len(pdf_files)} PDF files in inbox")
+    PaperSort.print_right(f"Found {len(pdf_files)} PDF files in inbox")
+    PaperSort.set_total_files(len(pdf_files))
     
     # Get human-readable inbox name from path
     inbox_name = os.path.basename(inbox_path.rstrip('/')) or "Inbox"
     
-    for file_info in pdf_files:
-        print(f"\n--- {file_info.path} ---")
+    for i, file_info in enumerate(pdf_files, 1):
+        PaperSort.set_progress(i, len(pdf_files))
+        PaperSort.print_right(f"\n--- {file_info.path} ---")
         
         # Build source URI: dropbox:{path}
         source = f"dropbox:{file_info.path}"
@@ -376,14 +410,14 @@ def process_dropbox_inbox(inbox_path: str) -> None:
         try:
             temp_path = dbx.download_to_temp(file_info.path)
         except StorageError as e:
-            print(f"Error downloading {file_info.name}: {str(e)}")
+            PaperSort.print_right(f"Error downloading {file_info.name}: {str(e)}")
             continue
         
         try:
             # Process the file (cleanup_temp=True to delete after)
             process_file(temp_path, cleanup_temp=True, source=source, inbox_path=readable_path)
         except Exception as e:
-            print(f"Error processing {file_info.name}: {str(e)}")
+            PaperSort.print_right(f"Error processing {file_info.name}: {str(e)}")
             # Ensure temp file is cleaned up even on error
             if os.path.exists(temp_path):
                 os.unlink(temp_path)

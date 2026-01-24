@@ -4,7 +4,7 @@ run:
 	uv run main.py
 
 run-test-inbox:
-	uv run main.py --inbox local:inbox --verify --update
+	uv run main.py --inbox local:inbox --verify --update --cli
 
 
 showlayout:
