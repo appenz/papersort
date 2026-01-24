@@ -3,6 +3,8 @@
 
 import argparse
 import os
+import time
+from datetime import datetime
 
 from papersort import PaperSort, __version__
 from workflows import (
@@ -21,6 +23,9 @@ from storage import (
     DropboxDriver,
     authenticate_dropbox,
 )
+
+# Ingest mode polling interval (5 minutes)
+INGEST_POLL_INTERVAL = 300
 
 
 def get_storage_display_name(uri: str) -> tuple:
@@ -64,12 +69,14 @@ def load_layout(docstore_uri: str) -> tuple:
     return (driver, driver.display_name)
 
 
-def run_processing(inbox_uri: str, docstore_uri: str) -> None:
+def run_processing(inbox_uri: str, docstore_uri: str, 
+                   delete_on_success: bool = False) -> None:
     """Run the document processing workflow.
     
     Args:
         inbox_uri: Inbox URI (e.g., 'gdrive:folder_id', 'local:path')
         docstore_uri: Docstore URI
+        delete_on_success: If True, delete source files after successful copy
     """
     # Load layout from docstore and get driver instance
     docstore_driver, docstore_name = load_layout(docstore_uri)
@@ -87,17 +94,19 @@ def run_processing(inbox_uri: str, docstore_uri: str) -> None:
         PaperSort.print_right("Copy mode: enabled" + (" (with verify)" if PaperSort.verify else ""))
     if PaperSort.log:
         PaperSort.print_right("Log mode: enabled (logging to --IncomingLog)")
+    if delete_on_success:
+        PaperSort.print_right("Delete mode: enabled (delete after successful copy)")
     
     # Initialize database
     PaperSort.init_db()
     
     # Process inbox based on type
     if inbox_type == "gdrive":
-        process_gdrive_inbox(inbox_value)
+        process_gdrive_inbox(inbox_value, delete_on_success=delete_on_success)
     elif inbox_type == "local":
-        process_local_inbox(inbox_value)
+        process_local_inbox(inbox_value, delete_on_success=delete_on_success)
     elif inbox_type == "dropbox":
-        process_dropbox_inbox(inbox_value)
+        process_dropbox_inbox(inbox_value, delete_on_success=delete_on_success)
     else:
         PaperSort.print_right(f"Unknown inbox storage type: {inbox_type}")
     
@@ -171,6 +180,38 @@ def main_tui(inbox: str = None) -> None:
     app.run()
 
 
+def run_ingest_mode(inbox_uri: str, docstore_uri: str) -> None:
+    """Run continuous inbox monitoring (daemon mode).
+    
+    Polls the inbox every 5 minutes, processes new files, and deletes
+    them from the inbox after successful copy to docstore.
+    
+    Args:
+        inbox_uri: Inbox URI (e.g., 'gdrive:folder_id', 'local:path', 'dropbox:/path')
+        docstore_uri: Docstore URI
+    """
+    print("=== PaperSort Ingest Mode ===")
+    print(f"Polling interval: {INGEST_POLL_INTERVAL // 60} minutes")
+    print(f"Inbox: {inbox_uri}")
+    print(f"Docstore: {docstore_uri}")
+    print()
+    
+    cycle = 0
+    while True:
+        cycle += 1
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n[{timestamp}] Starting processing cycle {cycle}...")
+        
+        try:
+            run_processing(inbox_uri, docstore_uri, delete_on_success=True)
+        except Exception as e:
+            print(f"Error during processing cycle {cycle}: {e}")
+            # Continue running, will retry next cycle
+        
+        print(f"\nSleeping for {INGEST_POLL_INTERVAL // 60} minutes...")
+        time.sleep(INGEST_POLL_INTERVAL)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Document sorting utility")
     parser.add_argument("--showlayout", action="store_true", 
@@ -193,7 +234,17 @@ if __name__ == "__main__":
                        help="Authenticate with Dropbox (one-time setup)")
     parser.add_argument("--cli", action="store_true",
                        help="Use CLI output instead of TextUI (default is TextUI)")
+    parser.add_argument("--ingest", action="store_true",
+                       help="Run in daemon mode: monitor inbox every 5 min, delete after successful copy")
     args = parser.parse_args()
+    
+    # --ingest implies --copy --log --verify --update --cli
+    if args.ingest:
+        args.copy = True
+        args.log = True
+        args.verify = True
+        args.update = True
+        args.cli = True
 
     # Handle --auth-dropbox first (doesn't need DOCSTORE)
     if args.auth_dropbox:
@@ -273,7 +324,23 @@ if __name__ == "__main__":
         # Configure PaperSort from args (docstore_driver set later in main())
         PaperSort.configure(args)
         
-        if args.cli:
+        if args.ingest:
+            # Ingest mode - continuous daemon monitoring
+            docstore_uri = os.environ.get('DOCSTORE')
+            inbox_uri = args.inbox or os.environ.get('INBOX')
+            
+            if not docstore_uri:
+                print("Error: DOCSTORE environment variable not set")
+                print("Example: DOCSTORE=gdrive:abc123 or DOCSTORE=local:docstore")
+                exit(1)
+            
+            if not inbox_uri:
+                print("Error: INBOX not specified")
+                print("Use --inbox or set INBOX environment variable")
+                exit(1)
+            
+            run_ingest_mode(inbox_uri, docstore_uri)
+        elif args.cli:
             # CLI mode - plain text output
             main(inbox=args.inbox)
         else:

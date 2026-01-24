@@ -122,15 +122,18 @@ def authenticate_dropbox(app_key: str, app_secret: str,
 # ---------------------------------------------------------------------------
 
 class DropboxDriver(StorageDriver):
-    """Storage driver for Dropbox (read-only).
+    """Storage driver for Dropbox.
     
-    This driver only supports read operations. Write operations raise
-    NotImplementedError.
+    Supports read operations and delete for inbox cleanup.
     """
     
     def __init__(self, root_path: str = "",
                  token_file: str = "dropbox_token.json") -> None:
         """Initialize Dropbox storage driver.
+        
+        Credentials are loaded from:
+        1. Token file (dropbox_token.json) if it exists
+        2. DROPBOX_TOKEN_JSON environment variable (for Docker deployment)
         
         Args:
             root_path: Root path within Dropbox (e.g., "/Inbox")
@@ -148,22 +151,31 @@ class DropboxDriver(StorageDriver):
         
         self._account_name: Optional[str] = None
         
-        if not os.path.exists(token_file):
-            raise StorageError(
-                f"Token file not found: {token_file}\n"
-                "Run 'python papersort.py --auth-dropbox' to authenticate."
-            )
+        # Try to load credentials from file first, then env var
+        token_data = None
         
-        try:
-            with open(token_file, 'r') as f:
-                token_data = json.load(f)
-        except json.JSONDecodeError as e:
-            raise StorageError(f"Invalid token file: {e}")
+        if os.path.exists(token_file):
+            try:
+                with open(token_file, 'r') as f:
+                    token_data = json.load(f)
+            except json.JSONDecodeError as e:
+                raise StorageError(f"Invalid token file: {e}")
+        elif os.environ.get('DROPBOX_TOKEN_JSON'):
+            try:
+                token_data = json.loads(os.environ['DROPBOX_TOKEN_JSON'])
+            except json.JSONDecodeError as e:
+                raise StorageError(f"Invalid DROPBOX_TOKEN_JSON env var: {e}")
+        else:
+            raise StorageError(
+                f"No Dropbox credentials found.\n"
+                f"Either create {token_file} (run 'python main.py --auth-dropbox')\n"
+                "or set DROPBOX_TOKEN_JSON environment variable."
+            )
         
         required_keys = ['app_key', 'app_secret', 'refresh_token']
         for key in required_keys:
             if key not in token_data:
-                raise StorageError(f"Token file missing required key: {key}")
+                raise StorageError(f"Dropbox credentials missing required key: {key}")
         
         self.client = dropbox_sdk.Dropbox(
             app_key=token_data['app_key'],
@@ -178,7 +190,7 @@ class DropboxDriver(StorageDriver):
         except AuthError as e:
             raise StorageError(
                 f"Authentication failed: {e}\n"
-                "Run 'python papersort.py --auth-dropbox' to re-authenticate."
+                "Run 'python main.py --auth-dropbox' to re-authenticate."
             )
     
     @_with_retry
@@ -379,6 +391,25 @@ class DropboxDriver(StorageDriver):
         name = name.replace('/', '-')
         name = name.strip()
         return name
+    
+    @_with_retry
+    def delete(self, path: str) -> None:
+        """Delete a file or folder from Dropbox.
+        
+        Args:
+            path: Relative path to the file or folder to delete
+            
+        Raises:
+            StorageError: If delete fails or path not found
+        """
+        full_path = self._full_path(path)
+        
+        try:
+            self.client.files_delete_v2(full_path)
+        except ApiError as e:
+            if e.error.is_path_lookup() and e.error.get_path_lookup().is_not_found():
+                raise StorageError(f"File not found: {path}")
+            raise StorageError(f"Failed to delete file: {e}")
     
     # =========================================================================
     # Legacy compatibility methods

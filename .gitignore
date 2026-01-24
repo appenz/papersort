@@ -16,6 +16,7 @@ docstore
 
 # Credentials & Settings
 .env
+docker.env
 credentials.json
 token.pickle
 dropbox_token.json

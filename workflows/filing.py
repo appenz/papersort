@@ -96,15 +96,20 @@ def _move_in_docstore(old_path: str, new_path: str) -> bool:
 
 
 def process_file(pdf_path: str, cleanup_temp: bool = False,
-                 source: Optional[str] = None, inbox_path: str = "") -> None:
-    """Process a single PDF file, using cache if available."""
+                 source: Optional[str] = None, inbox_path: str = "") -> bool:
+    """Process a single PDF file, using cache if available.
+    
+    Returns:
+        True if file was successfully processed and copied (or already exists in docstore),
+        False if processing failed or file couldn't be copied.
+    """
     filename = os.path.basename(pdf_path)
     
     if os.path.getsize(pdf_path) == 0:
         PaperSort.print_right(f"Skipping empty file: {filename}")
         if cleanup_temp:
             os.unlink(pdf_path)
-        return
+        return False
     
     file_hash = compute_sha256(pdf_path)
     existing = PaperSort.db.get_by_hash(file_hash)
@@ -139,7 +144,7 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
             if not doc.sort(llm_provider=PaperSort.llm_provider_name, inbox_path=inbox_path):
                 if cleanup_temp:
                     os.unlink(pdf_path)
-                return
+                return False
             doc.save_to_db(PaperSort.db, source=source)
             PaperSort.print_right(str(doc))
             
@@ -150,7 +155,7 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
             PaperSort.print_right(f"Error processing {filename}: {str(e)}")
             if cleanup_temp:
                 os.unlink(pdf_path)
-            return
+            return False
     
     if suggested_path:
         if DocSorter.path_exists(suggested_path):
@@ -161,9 +166,10 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
         # Log to filing panel (left side) - shows what would be/was filed
         _log_filing(title, year, inbox_path, suggested_path)
     
-    # Copy logic
+    # Copy logic - track success for return value
+    copy_success = False
     if PaperSort.copy and suggested_path and title and PaperSort.docstore_driver:
-        _handle_copy(
+        copy_success = _handle_copy(
             pdf_path=pdf_path,
             file_hash=file_hash,
             title=title,
@@ -175,12 +181,19 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
     
     if cleanup_temp:
         os.unlink(pdf_path)
+    
+    return copy_success
 
 
 def _handle_copy(pdf_path: str, file_hash: str, title: str, 
                  year: Optional[int], suggested_path: str, 
-                 existing: Optional[dict], inbox_path: str = "") -> None:
-    """Handle the copy logic for a processed file."""
+                 existing: Optional[dict], inbox_path: str = "") -> bool:
+    """Handle the copy logic for a processed file.
+    
+    Returns:
+        True if file is successfully in docstore (copied, moved, or verified),
+        False if copy/move failed.
+    """
     # Resolve company folder names before copying
     layout_tree = DocSorter._get_layout()
     resolved_path = resolve_company_folder(suggested_path, layout_tree)
@@ -200,18 +213,19 @@ def _handle_copy(pdf_path: str, file_hash: str, title: str,
             # File is already in the correct folder
             if not PaperSort.verify:
                 PaperSort.print_right("✓ Already in correct location (skipping)")
-                return
+                return True  # Already copied successfully
             
             # Verify mode: check file actually exists
             if file_exists_in_docstore(current_dest_path):
                 PaperSort.print_right(f"✓ Verified: {current_dest_path}")
-                return
+                return True
             
             # File missing, re-copy to same location (no log - not a new file)
             PaperSort.print_right(f"! File missing at {current_dest_path}, re-copying...")
             if copy_to_docstore(pdf_path, current_dest_path):
                 PaperSort.print_right(f"✓ Re-copied to: {current_dest_path}")
-            return
+                return True
+            return False
         
         # File is in wrong folder - needs to be moved (no log - not a new file)
         if current_dest_path:
@@ -225,15 +239,18 @@ def _handle_copy(pdf_path: str, file_hash: str, title: str,
                 if _move_in_docstore(current_dest_path, new_dest_path):
                     PaperSort.db.update_copied(file_hash, new_dest_path)
                     PaperSort.print_right(f"✓ Moved to: {new_dest_path}")
+                    return True
                 else:
                     PaperSort.print_right("✗ Failed to move file")
+                    return False
             else:
                 # File missing at old location, copy to new location
                 PaperSort.print_right("! File missing at old location, copying to new location...")
                 if copy_to_docstore(pdf_path, new_dest_path):
                     PaperSort.db.update_copied(file_hash, new_dest_path)
                     PaperSort.print_right(f"✓ Copied to: {new_dest_path}")
-            return
+                    return True
+                return False
     
     # File not yet copied: copy to suggested path
     # This is a NEW file - eligible for --log
@@ -248,14 +265,15 @@ def _handle_copy(pdf_path: str, file_hash: str, title: str,
             # Log if enabled (new file)
             if PaperSort.log:
                 _copy_to_incoming_log(pdf_path, title, year, file_hash)
-        return
+            return True
+        return False
     
     # Base name exists - check if it's the same file (hash name exists)
     if file_exists_in_docstore(hash_dest):
         # File already there with hash suffix
         PaperSort.db.update_copied(file_hash, hash_dest)
         PaperSort.print_right(f"✓ Already exists: {hash_dest}")
-        return
+        return True
     
     # Name collision with different file - use hash suffix
     if copy_to_docstore(pdf_path, hash_dest):
@@ -264,6 +282,8 @@ def _handle_copy(pdf_path: str, file_hash: str, title: str,
         # Log if enabled (new file)
         if PaperSort.log:
             _copy_to_incoming_log(pdf_path, title, year, file_hash)
+        return True
+    return False
 
 
 def _log_filing(title: str, year: Optional[int], old_path: str, new_path: str) -> None:
@@ -292,8 +312,13 @@ def _copy_to_incoming_log(pdf_path: str, title: str, year: Optional[int],
         PaperSort.print_right(f"✓ Logged to: {log_dest}")
 
 
-def process_local_inbox(inbox_path: str) -> None:
-    """Process all PDFs in a local inbox directory recursively."""
+def process_local_inbox(inbox_path: str, delete_on_success: bool = False) -> None:
+    """Process all PDFs in a local inbox directory recursively.
+    
+    Args:
+        inbox_path: Path to the local inbox directory
+        delete_on_success: If True, delete source files after successful copy
+    """
     if not os.path.exists(inbox_path):
         PaperSort.print_right(f"Inbox directory '{inbox_path}' does not exist")
         return
@@ -324,12 +349,25 @@ def process_local_inbox(inbox_path: str) -> None:
         inbox_name = os.path.basename(inbox_path)
         readable_path = f"{inbox_name}/{rel_path}" if rel_path != os.path.basename(filepath) else inbox_name
         
-        process_file(filepath, source=source, inbox_path=readable_path)
+        success = process_file(filepath, source=source, inbox_path=readable_path)
+        
+        # Delete source file after successful copy
+        if delete_on_success and success:
+            try:
+                os.unlink(filepath)
+                PaperSort.print_right(f"✓ Deleted from inbox: {rel_path}")
+            except Exception as e:
+                PaperSort.print_right(f"✗ Failed to delete from inbox: {e}")
 
 
-def process_gdrive_inbox(inbox_folder_id: str) -> None:
-    """Process all PDFs in a Google Drive inbox folder recursively."""
-    from storage import GDriveDriver
+def process_gdrive_inbox(inbox_folder_id: str, delete_on_success: bool = False) -> None:
+    """Process all PDFs in a Google Drive inbox folder recursively.
+    
+    Args:
+        inbox_folder_id: Google Drive folder ID for the inbox
+        delete_on_success: If True, delete source files after successful copy
+    """
+    from storage import GDriveDriver, StorageError
     
     # Create GDrive driver for inbox
     inbox_driver = GDriveDriver(inbox_folder_id)
@@ -361,7 +399,15 @@ def process_gdrive_inbox(inbox_folder_id: str) -> None:
         
         try:
             # Process the file (cleanup_temp=True to delete after)
-            process_file(temp_path, cleanup_temp=True, source=source, inbox_path=readable_path)
+            success = process_file(temp_path, cleanup_temp=True, source=source, inbox_path=readable_path)
+            
+            # Delete source file after successful copy
+            if delete_on_success and success:
+                try:
+                    inbox_driver.delete(file_info.path)
+                    PaperSort.print_right(f"✓ Deleted from inbox: {file_info.path}")
+                except StorageError as e:
+                    PaperSort.print_right(f"✗ Failed to delete from inbox: {e}")
         except Exception as e:
             PaperSort.print_right(f"Error processing {file_info.name}: {str(e)}")
             # Ensure temp file is cleaned up even on error
@@ -369,8 +415,13 @@ def process_gdrive_inbox(inbox_folder_id: str) -> None:
                 os.unlink(temp_path)
 
 
-def process_dropbox_inbox(inbox_path: str) -> None:
-    """Process all PDFs in a Dropbox inbox folder recursively."""
+def process_dropbox_inbox(inbox_path: str, delete_on_success: bool = False) -> None:
+    """Process all PDFs in a Dropbox inbox folder recursively.
+    
+    Args:
+        inbox_path: Dropbox path for the inbox folder
+        delete_on_success: If True, delete source files after successful copy
+    """
     from storage import DropboxDriver, StorageError
     
     # Create Dropbox driver
@@ -415,7 +466,15 @@ def process_dropbox_inbox(inbox_path: str) -> None:
         
         try:
             # Process the file (cleanup_temp=True to delete after)
-            process_file(temp_path, cleanup_temp=True, source=source, inbox_path=readable_path)
+            success = process_file(temp_path, cleanup_temp=True, source=source, inbox_path=readable_path)
+            
+            # Delete source file after successful copy
+            if delete_on_success and success:
+                try:
+                    dbx.delete(file_info.path)
+                    PaperSort.print_right(f"✓ Deleted from inbox: {file_info.path}")
+                except StorageError as e:
+                    PaperSort.print_right(f"✗ Failed to delete from inbox: {e}")
         except Exception as e:
             PaperSort.print_right(f"Error processing {file_info.name}: {str(e)}")
             # Ensure temp file is cleaned up even on error

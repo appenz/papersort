@@ -90,6 +90,10 @@ class GDriveDriver(StorageDriver):
                  service_account_file: str = "service_account_key.json") -> None:
         """Initialize Google Drive storage driver.
         
+        Credentials are loaded from:
+        1. Service account file (service_account_key.json) if it exists
+        2. GOOGLE_SERVICE_ACCOUNT_JSON environment variable (for Docker deployment)
+        
         Args:
             root_folder_id: Google Drive folder ID to use as root
             service_account_file: Path to service account credentials JSON
@@ -97,13 +101,32 @@ class GDriveDriver(StorageDriver):
         Raises:
             StorageError: If authentication fails or folder can't be accessed
         """
+        import json
+        
         self.root_folder_id = root_folder_id
         self._root_folder_name: Optional[str] = None
         
         try:
-            self.creds = service_account.Credentials.from_service_account_file(
-                service_account_file, scopes=SCOPES
-            )
+            # Try file first, then env var
+            if os.path.exists(service_account_file):
+                self.creds = service_account.Credentials.from_service_account_file(
+                    service_account_file, scopes=SCOPES
+                )
+            elif os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON'):
+                try:
+                    sa_info = json.loads(os.environ['GOOGLE_SERVICE_ACCOUNT_JSON'])
+                    self.creds = service_account.Credentials.from_service_account_info(
+                        sa_info, scopes=SCOPES
+                    )
+                except json.JSONDecodeError as e:
+                    raise StorageError(f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON env var: {e}")
+            else:
+                raise StorageError(
+                    f"No Google credentials found.\n"
+                    f"Either create {service_account_file}\n"
+                    "or set GOOGLE_SERVICE_ACCOUNT_JSON environment variable."
+                )
+            
             self.service = build('drive', 'v3', credentials=self.creds)
             
             # Verify folder exists and get its name
@@ -114,6 +137,8 @@ class GDriveDriver(StorageDriver):
             ))
             self._root_folder_name = result['name']
             
+        except StorageError:
+            raise
         except Exception as e:
             raise StorageError(f"Failed to initialize Google Drive: {e}")
     
