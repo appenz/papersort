@@ -480,8 +480,8 @@ class GDriveDriver(StorageDriver):
             else:
                 old_parent_id = self.root_folder_id
             
-            # Get destination folder ID
-            new_parent_id = self._get_folder_id(dest_folder)
+            # Get destination folder ID (create if doesn't exist)
+            new_parent_id = self._ensure_folders_exist(dest_folder)
             
             # Move the file
             _execute_with_retry(self.service.files().update(
