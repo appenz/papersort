@@ -276,11 +276,12 @@ class DocSorter:
             
         return "\n".join(parts)
 
-    def sort(self, llm_provider: str = "mistral") -> bool:
+    def sort(self, llm_provider: str = "mistral", inbox_path: str = "") -> bool:
         """Analyzes document and populates metadata fields.
         
         Args:
             llm_provider: The LLM provider to use ("mistral" or "openai").
+            inbox_path: Human-readable inbox path for context.
             
         Returns:
             True if successful, False if failed to get valid path.
@@ -292,6 +293,7 @@ class DocSorter:
             pdf_path=self.previous_path,
             layout=DocSorter.layout,
             hint=self.previous_path,
+            inbox_path=inbox_path,
             path_validator=DocSorter.path_exists
         )
         

@@ -42,6 +42,7 @@ class OpenAILLM(LLM):
         pdf_path: str,
         layout: str,
         hint: str = "",
+        inbox_path: str = "",
         path_validator: Optional[callable] = None
     ) -> Optional[DocumentAnalysis]:
         """Analyze a PDF document using OpenAI's GPT-4 with vision.
@@ -64,7 +65,7 @@ class OpenAILLM(LLM):
             raise LLMError(f"Failed to read PDF file: {e}")
         
         # Build the prompt
-        prompt = self._build_analysis_prompt(layout, hint)
+        prompt = self._build_analysis_prompt(layout, hint, inbox_path)
         
         # Build messages with base64-encoded PDF
         messages = [

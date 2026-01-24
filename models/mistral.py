@@ -43,6 +43,7 @@ class MistralLLM(LLM):
         pdf_path: str,
         layout: str,
         hint: str = "",
+        inbox_path: str = "",
         path_validator: Optional[callable] = None
     ) -> Optional[DocumentAnalysis]:
         """Analyze a PDF document using Mistral's file upload API.
@@ -74,7 +75,7 @@ class MistralLLM(LLM):
             raise LLMError(f"Failed to upload document to Mistral: {e}")
         
         # Build the prompt
-        prompt = self._build_analysis_prompt(layout, hint)
+        prompt = self._build_analysis_prompt(layout, hint, inbox_path)
         
         # Build messages with document URL
         messages = [

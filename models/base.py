@@ -157,6 +157,7 @@ class LLM(ABC):
         pdf_path: str,
         layout: str,
         hint: str = "",
+        inbox_path: str = "",
         path_validator: Optional[callable] = None
     ) -> Optional[DocumentAnalysis]:
         """Analyze a PDF document and return structured metadata.
@@ -165,6 +166,7 @@ class LLM(ABC):
             pdf_path: Path to the PDF file to analyze
             layout: The layout.txt content describing the folder structure
             hint: Optional hint about the document (e.g., previous filing path)
+            inbox_path: Optional inbox path where the document came from
             path_validator: Optional function to validate suggested paths.
                            If provided, will retry if path is invalid.
         
@@ -248,17 +250,20 @@ class LLM(ABC):
                 f"({file_size / 1024 / 1024:.1f}MB)"
             )
     
-    def _build_analysis_prompt(self, layout: str, hint: str = "") -> str:
+    def _build_analysis_prompt(self, layout: str, hint: str = "", inbox_path: str = "") -> str:
         """Build the full prompt for document analysis.
         
         Args:
             layout: The layout.txt content
             hint: Optional hint about the document
+            inbox_path: Optional inbox path where the document came from
             
         Returns:
             Complete prompt string
         """
         prompt = DOCUMENT_ANALYSIS_PROMPT + layout
+        if inbox_path:
+            prompt += f"\n---\nThis document came from the inbox path: {inbox_path}"
         if hint:
             prompt += f"\n---\nOne last hint, in a different place this document was filed as: {hint}"
         return prompt

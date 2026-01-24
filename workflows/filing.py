@@ -96,7 +96,7 @@ def _move_in_docstore(old_path: str, new_path: str) -> bool:
 
 
 def process_file(pdf_path: str, cleanup_temp: bool = False,
-                 source: Optional[str] = None) -> None:
+                 source: Optional[str] = None, inbox_path: str = "") -> None:
     """Process a single PDF file, using cache if available."""
     filename = os.path.basename(pdf_path)
     
@@ -136,7 +136,7 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
         try:
             print(f"\033[91mProcessing: {filename}\033[0m")
             doc = DocSorter(pdf_path)
-            if not doc.sort(llm_provider=PaperSort.llm_provider_name):
+            if not doc.sort(llm_provider=PaperSort.llm_provider_name, inbox_path=inbox_path):
                 if cleanup_temp:
                     os.unlink(pdf_path)
                 return
@@ -290,8 +290,11 @@ def process_local_inbox(inbox_path: str) -> None:
                 
                 # Build source URI: local:{inbox_path}:{relative_path}
                 source = f"local:{inbox_path}:{rel_path}"
+                # Human-readable path: inbox folder name + relative path
+                inbox_name = os.path.basename(inbox_path)
+                readable_path = f"{inbox_name}/{rel_path}" if rel_path != filename else inbox_name
                 
-                process_file(filepath, source=source)
+                process_file(filepath, source=source, inbox_path=readable_path)
 
 
 def process_gdrive_inbox(inbox_folder_id: str) -> None:
@@ -310,18 +313,23 @@ def process_gdrive_inbox(inbox_folder_id: str) -> None:
     
     print(f"Found {len(pdf_files)} PDF files in inbox")
     
+    # Get human-readable inbox name
+    inbox_name = inbox_driver._root_folder_name or "Inbox"
+    
     for file_info in pdf_files:
         print(f"\n--- {file_info.path} ---")
         
         # Build source URI: gdrive:{folder_id}:{path}
         source = f"gdrive:{inbox_folder_id}:{file_info.path}"
+        # Human-readable path: inbox name + file path
+        readable_path = f"{inbox_name}/{file_info.path}"
         
         # Download to temp file
         temp_path = inbox_driver.download_to_temp(file_info.path)
         
         try:
             # Process the file (cleanup_temp=True to delete after)
-            process_file(temp_path, cleanup_temp=True, source=source)
+            process_file(temp_path, cleanup_temp=True, source=source, inbox_path=readable_path)
         except Exception as e:
             print(f"Error processing {file_info.name}: {str(e)}")
             # Ensure temp file is cleaned up even on error
@@ -353,11 +361,16 @@ def process_dropbox_inbox(inbox_path: str) -> None:
     
     print(f"Found {len(pdf_files)} PDF files in inbox")
     
+    # Get human-readable inbox name from path
+    inbox_name = os.path.basename(inbox_path.rstrip('/')) or "Inbox"
+    
     for file_info in pdf_files:
         print(f"\n--- {file_info.path} ---")
         
         # Build source URI: dropbox:{path}
         source = f"dropbox:{file_info.path}"
+        # Human-readable path: inbox name + file path
+        readable_path = f"{inbox_name}/{file_info.path}"
         
         # Download to temp file
         try:
@@ -368,7 +381,7 @@ def process_dropbox_inbox(inbox_path: str) -> None:
         
         try:
             # Process the file (cleanup_temp=True to delete after)
-            process_file(temp_path, cleanup_temp=True, source=source)
+            process_file(temp_path, cleanup_temp=True, source=source, inbox_path=readable_path)
         except Exception as e:
             print(f"Error processing {file_info.name}: {str(e)}")
             # Ensure temp file is cleaned up even on error
