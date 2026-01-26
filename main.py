@@ -14,6 +14,7 @@ from workflows import (
     process_gdrive_inbox,
     process_dropbox_inbox,
     deduplicate_company_folders,
+    repair_cache,
 )
 from storage import (
     create_storage,
@@ -228,6 +229,8 @@ if __name__ == "__main__":
                        help="Log incoming files to --IncomingLog folder (use with --copy)")
     parser.add_argument("--deduplicate", action="store_true", 
                        help="Find and merge duplicate company folders in the docstore")
+    parser.add_argument("--repair", action="store_true",
+                       help="Scan docstore and repair metadata cache (fix copied/dest_path, handle duplicates)")
     parser.add_argument("--inbox", type=str, 
                        help="Inbox URI (e.g., gdrive:folder_id, local:path, or dropbox:/path)")
     parser.add_argument("--auth-dropbox", action="store_true",
@@ -286,6 +289,28 @@ if __name__ == "__main__":
             print("Starting deduplication...")
             
             deduplicate_company_folders()
+    
+    elif args.repair:
+        if not docstore_uri:
+            print("Error: DOCSTORE environment variable not set")
+            print("Example: DOCSTORE=gdrive:abc123 or DOCSTORE=local:docstore")
+        else:
+            from textui import PaperSortApp
+            
+            docstore_driver, docstore_name = load_layout(docstore_uri)
+            PaperSort.docstore_driver = docstore_driver
+            
+            def repair_func():
+                PaperSort.init_db()
+                repair_cache()
+                PaperSort.close()
+            
+            app = PaperSortApp(
+                source="Repair Cache",
+                destination=docstore_name,
+                process_func=repair_func
+            )
+            app.run()
     
     elif args.showlayout:
         if not docstore_uri:

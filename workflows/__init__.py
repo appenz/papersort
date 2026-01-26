@@ -30,6 +30,7 @@ from .deduplication import (
     merge_folders,
     deduplicate_company_folders,
 )
+from .repair import repair_cache
 
 
 __all__ = [
@@ -62,4 +63,7 @@ __all__ = [
     'list_files_in_folder',
     'merge_folders',
     'deduplicate_company_folders',
+    
+    # Repair workflow
+    'repair_cache',
 ]

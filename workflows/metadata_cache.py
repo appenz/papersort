@@ -98,8 +98,20 @@ class MetadataCache:
     def insert(self, sha256: str, path: Optional[str], metadata: Dict, 
                source: Optional[str] = None, copied: bool = False, 
                dest_path: Optional[str] = None) -> None:
-        """Insert or update a document record."""
+        """Insert or update a document record.
+        
+        Preserves existing copied/dest_path values unless explicitly provided.
+        """
         cursor = self.conn.cursor()
+        
+        # Preserve existing copied/dest_path if not explicitly provided
+        if not copied and dest_path is None:
+            cursor.execute("SELECT copied, dest_path FROM documents WHERE sha256 = ?", (sha256,))
+            row = cursor.fetchone()
+            if row:
+                copied = bool(row[0])
+                dest_path = row[1]
+        
         cursor.execute("""
             INSERT OR REPLACE INTO documents 
             (sha256, path, title, suggested_path, confidence, year, date, entity, summary,

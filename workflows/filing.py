@@ -122,6 +122,8 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
     # --update: force re-evaluation via LLM, ignoring cached metadata
     if existing and not PaperSort.update:
         PaperSort.print_right(f"[yellow]Cached: {filename}[/yellow]")
+        if existing.get('dest_path'):
+            PaperSort.print_right(f"Current location: {existing['dest_path']}")
         PaperSort.print_right(f"File: {filename}")
         if existing.get('title'):
             PaperSort.print_right(f"Title: {existing['title']} {existing.get('year', '')}")
