@@ -12,7 +12,6 @@ You specify the folder structure as a simple text document that looks like this:
 - Financial : Financial documents and banking records
    - Bank Accounts : Bank statements and account records
       - By company
-      - By year
    - Taxes : Tax returns and related documents
       - By year
    - Insurance : Insurance policies and claims
