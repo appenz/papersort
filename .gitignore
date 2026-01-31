@@ -13,6 +13,7 @@ wheels/
 # Project-specific files
 inbox
 docstore
+tmp_docstore
 
 # Credentials & Settings
 .env
