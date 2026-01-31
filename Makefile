@@ -24,6 +24,7 @@ run:
 	uv run main.py
 
 run-test-inbox:
+	rm -rf tmp_docstore
 	cp -r docstore tmp_docstore
 	DOCSTORE=local:./tmp_docstore uv run main.py --inbox local:inbox --copy --log --verify --update --cli
 

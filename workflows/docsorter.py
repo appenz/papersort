@@ -7,6 +7,7 @@ import os
 from typing import Dict, Optional, List, Union, TYPE_CHECKING
 
 from .metadata_cache import compute_sha256
+from .file_metadata import FileMetadata
 
 if TYPE_CHECKING:
     from .metadata_cache import MetadataCache
@@ -312,16 +313,83 @@ class DocSorter:
         
         return True
     
+    @classmethod
+    def analyze(cls, file_path: str, llm_provider: str = "mistral",
+                inbox_path: str = "") -> Optional[FileMetadata]:
+        """Analyze a document and return FileMetadata.
+        
+        Args:
+            file_path: Path to the PDF file.
+            llm_provider: The LLM provider to use ("mistral" or "openai").
+            inbox_path: Human-readable inbox path for context.
+            
+        Returns:
+            FileMetadata with analysis fields populated, or None if failed.
+        """
+        from models import create_llm
+        
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Input file not found: {file_path}")
+        
+        file_ext = os.path.splitext(file_path)[1].lower()
+        if file_ext not in ['.pdf']:
+            raise ValueError(f"Unsupported file type: {file_ext}. Must be PDF.")
+        
+        # Ensure layout is loaded
+        if cls._layout_tree is None:
+            cls._layout_tree = cls._read_layout()
+        
+        sha256 = compute_sha256(file_path)
+        file_size = os.path.getsize(file_path)
+        original_filename = os.path.basename(file_path)
+        
+        llm = create_llm(llm_provider)
+        result = llm.analyze_document(
+            pdf_path=file_path,
+            layout=cls.layout,
+            hint=file_path,
+            inbox_path=inbox_path,
+            path_validator=cls.path_exists
+        )
+        
+        if result is None:
+            return None
+        
+        # Convert year string to int if present
+        reporting_year = None
+        if result.year:
+            try:
+                reporting_year = int(result.year)
+            except (ValueError, TypeError):
+                pass
+        
+        return FileMetadata(
+            sha256=sha256,
+            original_filename=original_filename,
+            file_size=file_size,
+            title=result.title,
+            entity=result.entity,
+            summary=result.summary,
+            confidence=result.confidence,
+            reporting_year=reporting_year,
+            document_date=result.date,
+            suggested_path=result.suggested_path,
+        )
+    
     def save_to_db(self, db: "MetadataCache", path: Optional[str] = None, 
                    source: Optional[str] = None) -> None:
-        """Save document metadata to the database."""
-        metadata = {
-            'title': self.title,
-            'suggested_path': self.suggested_path,
-            'confidence': self.confidence,
-            'year': self.year,
-            'date': self.date,
-            'entity': self.entity,
-            'summary': self.summary
-        }
-        db.insert(self.sha256, path, metadata, source=source)
+        """Save document metadata to the database (legacy method)."""
+        metadata = FileMetadata(
+            sha256=self.sha256,
+            original_filename=self.file_name,
+            file_size=os.path.getsize(self.previous_path) if os.path.exists(self.previous_path) else None,
+            src_uri=source,
+            title=self.title,
+            entity=self.entity,
+            summary=self.summary,
+            confidence=self.confidence,
+            reporting_year=int(self.year) if self.year else None,
+            document_date=self.date,
+            suggested_path=self.suggested_path,
+        )
+        db.save(metadata)

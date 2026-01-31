@@ -4,8 +4,8 @@ MetadataCache - Document Analysis Cache
 Location: workflows/metadata_cache.py
 Database: ~/Library/Application Support/papersort/metadata.db
 
-Caches LLM-extracted document metadata to avoid reprocessing identical files.
-Uses SQLite for persistence.
+Caches document metadata to avoid reprocessing identical files.
+Uses SQLite for persistence. See metadata.md for FileMetadata dataclass.
 
 
 Class: MetadataCache
@@ -17,19 +17,16 @@ Constructor:
     Default path: ~/Library/Application Support/papersort/metadata.db
 
 Methods:
-  get_by_hash(sha256: str) -> dict | None
+  get_by_hash(sha256: str) -> FileMetadata | None
     Primary lookup by file content hash.
-
-  get_by_path(path: str) -> dict | None
-    Secondary lookup by source path.
 
   exists(sha256: str) -> bool
     Quick existence check.
 
-  store(sha256: str, metadata: dict, source: str = None)
+  save(metadata: FileMetadata)
     Insert or update document record.
 
-  update_copied(sha256: str, dest_path: str)
+  update_copied(sha256: str, dst_uri: str, dst_uri_display: str)
     Mark file as copied, record destination.
 
   close()
@@ -45,35 +42,38 @@ Database Schema
 
 Table: documents
 
-  sha256 TEXT PRIMARY KEY    -- File content hash (lookup key)
-  path TEXT                  -- Last known source path
-  source TEXT                -- Source URI (gdrive:id:path, local:path, etc.)
-  title TEXT                 -- Document title from LLM
-  suggested_path TEXT        -- Target path in docstore
-  confidence INTEGER         -- LLM confidence score (1-10)
-  year INTEGER               -- Document/tax year
-  date TEXT                  -- Document date (YYYY-MM format)
-  entity TEXT                -- Company/person name
-  summary TEXT               -- Brief description
-  copied INTEGER DEFAULT 0   -- 1 if copied to docstore
-  dest_path TEXT             -- Actual destination path after copy
+  sha256 TEXT PRIMARY KEY       -- File content hash (lookup key)
+  original_filename TEXT        -- Original filename without path
+  file_size INTEGER             -- File size in bytes
+  src_uri TEXT                  -- Source URI (gdrive:id:path, local:path, etc.)
+  src_uri_display TEXT          -- Human-readable source path
+  title TEXT                    -- Document title from LLM
+  entity TEXT                   -- Company/person name
+  summary TEXT                  -- Brief description
+  confidence INTEGER            -- LLM confidence score (1-10)
+  reporting_year INTEGER        -- Year the document is about
+  document_date TEXT            -- Date on document (YYYY-MM)
+  suggested_path TEXT           -- LLM-suggested folder path
+  dst_uri TEXT                  -- Destination URI after copy
+  dst_uri_display TEXT          -- Human-readable destination path
+  copied INTEGER DEFAULT 0      -- 1 if copied to docstore
 
-Index: idx_documents_path ON (path)
+Index: idx_documents_src_uri ON (src_uri)
 
 
-Source URI Format
------------------
+URI Format
+----------
 
-Tracks where files originated:
+  {storage_type}:{storage_id}:{path}
 
   gdrive:{folder_id}:{relative_path}
-    Example: gdrive:abc123:Taxes/2024/return.pdf
+    Example: gdrive:1aBcDeF:Taxes/2024/return.pdf
 
   local:{inbox_path}:{relative_path}
-    Example: local:/Users/me/inbox:Taxes/2024/return.pdf
+    Example: local:/Users/me/inbox:subfolder/doc.pdf
 
-  local::{absolute_path}
-    Example: local::/Users/me/Downloads/document.pdf
+  dropbox:{root_path}:{relative_path}
+    Example: dropbox:/Inbox:subfolder/doc.pdf
 
 
 Behavior
@@ -81,8 +81,8 @@ Behavior
 
   - Creates DB directory if missing
   - Uses INSERT OR REPLACE for idempotent writes
-  - Returns dict with all fields or None for lookups
   - SHA256 is the source of truth for file identity
+  - No migration: delete existing cache to reset
 
 
 Usage Example
@@ -94,15 +94,13 @@ Usage Example
   existing = cache.get_by_hash(file_hash)
   if existing and not force_update:
       # Use cached metadata
-      title = existing['title']
-      suggested_path = existing['suggested_path']
+      existing.display(PaperSort.print_right)
   else:
-      # Run LLM analysis
-      doc = DocSorter(file_path)
-      doc.sort(llm_provider)
-      doc.save_to_db(cache, source=source_uri)
+      # Run LLM analysis, get FileMetadata
+      metadata = analyze_document(file_path)
+      cache.save(metadata)
 
   # After copying
-  cache.update_copied(file_hash, dest_path)
+  cache.update_copied(file_hash, dst_uri, dst_uri_display)
 
   cache.close()

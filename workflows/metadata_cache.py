@@ -1,12 +1,14 @@
 """Metadata cache for document analysis results.
 
-Stores LLM-extracted metadata in SQLite to avoid re-processing documents.
+Stores document metadata in SQLite to avoid re-processing documents.
 """
 
 import os
 import sqlite3
 import hashlib
-from typing import Dict, Optional
+from typing import Optional
+
+from .file_metadata import FileMetadata
 
 # macOS Application Support directory
 DB_DIR = os.path.expanduser("~/Library/Application Support/papersort")
@@ -26,7 +28,6 @@ class MetadataCache:
     """SQLite cache for document metadata.
     
     Stores analysis results keyed by file hash to avoid re-processing.
-    Also tracks filing state (source, copied, dest_path).
     """
     
     def __init__(self, db_path: str = DB_PATH) -> None:
@@ -46,114 +47,73 @@ class MetadataCache:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 sha256 TEXT PRIMARY KEY,
-                path TEXT,
+                original_filename TEXT,
+                file_size INTEGER,
+                src_uri TEXT,
+                src_uri_display TEXT,
                 title TEXT,
-                suggested_path TEXT,
-                confidence INTEGER,
-                year INTEGER,
-                date TEXT,
                 entity TEXT,
                 summary TEXT,
-                source TEXT,
-                copied INTEGER DEFAULT 0,
-                dest_path TEXT
+                confidence INTEGER,
+                reporting_year INTEGER,
+                document_date TEXT,
+                suggested_path TEXT,
+                dst_uri TEXT,
+                dst_uri_display TEXT,
+                copied INTEGER DEFAULT 0
             )
         """)
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path)
-        """)
-        self.conn.commit()
-        
-        # Migration: add new columns if they don't exist (for existing databases)
-        # Must run before creating indexes on new columns
-        self._migrate_add_columns()
-        
-        # Create index on source column (after migration ensures column exists)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source)
+            CREATE INDEX IF NOT EXISTS idx_documents_src_uri ON documents(src_uri)
         """)
         self.conn.commit()
     
-    def _migrate_add_columns(self) -> None:
-        """Add new columns to existing databases if they don't exist."""
+    def save(self, metadata: FileMetadata) -> None:
+        """Insert or update a document record."""
         cursor = self.conn.cursor()
-        
-        # Get existing columns
-        cursor.execute("PRAGMA table_info(documents)")
-        existing_columns = {row[1] for row in cursor.fetchall()}
-        
-        # Add missing columns
-        migrations = [
-            ("source", "TEXT"),
-            ("copied", "INTEGER DEFAULT 0"),
-            ("dest_path", "TEXT"),
-        ]
-        
-        for col_name, col_type in migrations:
-            if col_name not in existing_columns:
-                cursor.execute(f"ALTER TABLE documents ADD COLUMN {col_name} {col_type}")
-        
-        self.conn.commit()
-    
-    def insert(self, sha256: str, path: Optional[str], metadata: Dict, 
-               source: Optional[str] = None, copied: bool = False, 
-               dest_path: Optional[str] = None) -> None:
-        """Insert or update a document record.
-        
-        Preserves existing copied/dest_path values unless explicitly provided.
-        """
-        cursor = self.conn.cursor()
-        
-        # Preserve existing copied/dest_path if not explicitly provided
-        if not copied and dest_path is None:
-            cursor.execute("SELECT copied, dest_path FROM documents WHERE sha256 = ?", (sha256,))
-            row = cursor.fetchone()
-            if row:
-                copied = bool(row[0])
-                dest_path = row[1]
+        data = metadata.to_cache_dict()
         
         cursor.execute("""
             INSERT OR REPLACE INTO documents 
-            (sha256, path, title, suggested_path, confidence, year, date, entity, summary,
-             source, copied, dest_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (sha256, original_filename, file_size, src_uri, src_uri_display,
+             title, entity, summary, confidence, reporting_year, document_date,
+             suggested_path, dst_uri, dst_uri_display, copied)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            sha256,
-            path,
-            metadata.get('title'),
-            metadata.get('suggested_path'),
-            metadata.get('confidence'),
-            metadata.get('year'),
-            metadata.get('date'),
-            metadata.get('entity'),
-            metadata.get('summary'),
-            source,
-            1 if copied else 0,
-            dest_path
+            data["sha256"],
+            data["original_filename"],
+            data["file_size"],
+            data["src_uri"],
+            data["src_uri_display"],
+            data["title"],
+            data["entity"],
+            data["summary"],
+            data["confidence"],
+            data["reporting_year"],
+            data["document_date"],
+            data["suggested_path"],
+            data["dst_uri"],
+            data["dst_uri_display"],
+            data["copied"],
         ))
         self.conn.commit()
     
-    def update_copied(self, sha256: str, dest_path: str) -> None:
-        """Mark a document as copied and store its destination path."""
+    def update_copied(self, sha256: str, dst_uri: str, dst_uri_display: str) -> None:
+        """Mark a document as copied and store its destination."""
         cursor = self.conn.cursor()
         cursor.execute("""
-            UPDATE documents SET copied = 1, dest_path = ? WHERE sha256 = ?
-        """, (dest_path, sha256))
+            UPDATE documents 
+            SET copied = 1, dst_uri = ?, dst_uri_display = ? 
+            WHERE sha256 = ?
+        """, (dst_uri, dst_uri_display, sha256))
         self.conn.commit()
     
-    def get_by_hash(self, sha256: str) -> Optional[Dict]:
+    def get_by_hash(self, sha256: str) -> Optional[FileMetadata]:
         """Look up a document by its SHA256 hash."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM documents WHERE sha256 = ?", (sha256,))
         row = cursor.fetchone()
-        return dict(row) if row else None
-    
-    def get_by_path(self, path: str) -> Optional[Dict]:
-        """Look up a document by its path."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM documents WHERE path = ?", (path,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        return FileMetadata.from_cache_row(dict(row)) if row else None
     
     def exists(self, sha256: str) -> bool:
         """Check if a document with given hash exists."""

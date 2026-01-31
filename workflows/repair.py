@@ -6,6 +6,7 @@ from typing import Optional
 
 from papersort import PaperSort
 from .metadata_cache import compute_sha256
+from .filing import _get_docstore_uri, _get_docstore_display_name
 
 
 def _log_repair(title: Optional[str], year: Optional[int], 
@@ -24,7 +25,7 @@ def _log_repair(title: Optional[str], year: Optional[int],
 def repair_cache() -> None:
     """Scan docstore and repair metadata cache.
     
-    - Updates copied/dest_path for files found in docstore
+    - Updates copied/dst_uri for files found in docstore
     - Detects and handles duplicates
     - Skips folders starting with '--'
     """
@@ -41,6 +42,8 @@ def repair_cache() -> None:
     
     PaperSort.print_right(f"Found {len(files)} PDF files (excluding system folders)")
     PaperSort.set_total_files(len(files))
+    
+    docstore_display = _get_docstore_display_name()
     
     repaired = 0
     duplicates_moved = 0
@@ -70,35 +73,44 @@ def repair_cache() -> None:
             PaperSort.print_right(f"  Not in cache (needs processing)")
             continue
         
-        db_dest_path = existing.get('dest_path')
-        db_copied = existing.get('copied')
-        suggested_path = existing.get('suggested_path')
+        # Extract path from dst_uri if present
+        db_dest_path = None
+        if existing.dst_uri:
+            parts = existing.dst_uri.split(":", 2)
+            db_dest_path = parts[2] if len(parts) == 3 else existing.dst_uri
         
-        # Case 1: No dest_path recorded - just update
+        db_copied = existing.copied
+        suggested_path = existing.suggested_path
+        
+        # Case 1: No dst_uri recorded - just update
         if not db_dest_path:
-            _update_dest_path(file_hash, scan_path)
-            PaperSort.print_right(f"  [green]Updated: dest_path was empty[/green]")
-            _log_repair(existing.get('title'), existing.get('year'), 
+            dst_uri = _get_docstore_uri(scan_path)
+            dst_display = f"{docstore_display}/{scan_path}"
+            PaperSort.db.update_copied(file_hash, dst_uri, dst_display)
+            PaperSort.print_right(f"  [green]Updated: dst_uri was empty[/green]")
+            _log_repair(existing.title, existing.reporting_year, 
                        scan_path, f"→ {scan_path}")
             repaired += 1
             continue
         
-        # Case 2: dest_path matches scan_path - ensure copied=1
+        # Case 2: dst_path matches scan_path - ensure copied=1
         scan_folder = os.path.dirname(scan_path)
         db_folder = os.path.dirname(db_dest_path)
         
         if db_dest_path == scan_path:
             if not db_copied:
-                PaperSort.db.update_copied(file_hash, scan_path)
+                dst_uri = _get_docstore_uri(scan_path)
+                dst_display = f"{docstore_display}/{scan_path}"
+                PaperSort.db.update_copied(file_hash, dst_uri, dst_display)
                 PaperSort.print_right(f"  [green]Fixed: copied flag was 0[/green]")
-                _log_repair(existing.get('title'), existing.get('year'),
+                _log_repair(existing.title, existing.reporting_year,
                            scan_path, "Fixed: copied flag")
                 repaired += 1
             else:
                 PaperSort.print_right(f"  OK")
             continue
         
-        # Case 3: dest_path differs - check for duplicate
+        # Case 3: dst_path differs - check for duplicate
         if driver.file_exists(db_dest_path):
             # Duplicate detected!
             PaperSort.print_right(f"  [yellow]Duplicate! Also exists at: {db_dest_path}[/yellow]")
@@ -110,9 +122,11 @@ def repair_cache() -> None:
                 if scan_folder == suggested_folder:
                     # Keep scan_path, move db_dest_path to --Duplicate
                     if _move_to_duplicate(db_dest_path):
-                        _update_dest_path(file_hash, scan_path)
+                        dst_uri = _get_docstore_uri(scan_path)
+                        dst_display = f"{docstore_display}/{scan_path}"
+                        PaperSort.db.update_copied(file_hash, dst_uri, dst_display)
                         PaperSort.print_right(f"  [green]Moved to --Duplicate[/green]")
-                        _log_repair(existing.get('title'), existing.get('year'),
+                        _log_repair(existing.title, existing.reporting_year,
                                    db_dest_path, f"{db_dest_path} → --Duplicate")
                         duplicates_moved += 1
                     continue
@@ -121,7 +135,7 @@ def repair_cache() -> None:
                     # Keep db_dest_path, move scan_path to --Duplicate
                     if _move_to_duplicate(scan_path):
                         PaperSort.print_right(f"  [green]Moved to --Duplicate[/green]")
-                        _log_repair(existing.get('title'), existing.get('year'),
+                        _log_repair(existing.title, existing.reporting_year,
                                    scan_path, f"{scan_path} → --Duplicate")
                         duplicates_moved += 1
                     continue
@@ -131,9 +145,11 @@ def repair_cache() -> None:
             duplicates_skipped += 1
         else:
             # File doesn't exist at db_dest_path, update to scan_path
-            _update_dest_path(file_hash, scan_path)
+            dst_uri = _get_docstore_uri(scan_path)
+            dst_display = f"{docstore_display}/{scan_path}"
+            PaperSort.db.update_copied(file_hash, dst_uri, dst_display)
             PaperSort.print_right(f"  [green]Updated: file was not at recorded location[/green]")
-            _log_repair(existing.get('title'), existing.get('year'),
+            _log_repair(existing.title, existing.reporting_year,
                        scan_path, f"{db_dest_path} → {scan_path}")
             repaired += 1
     
@@ -147,11 +163,6 @@ def _in_system_folder(path: str) -> bool:
     """Check if path is inside a folder starting with '--'."""
     parts = path.split('/')
     return any(part.startswith('--') for part in parts)
-
-
-def _update_dest_path(file_hash: str, dest_path: str) -> None:
-    """Update the dest_path and set copied=1."""
-    PaperSort.db.update_copied(file_hash, dest_path)
 
 
 def _move_to_duplicate(file_path: str) -> bool:

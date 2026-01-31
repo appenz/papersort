@@ -7,6 +7,7 @@ Contains business logic for document processing workflows:
 """
 
 from .docsorter import DocSorter
+from .file_metadata import FileMetadata
 from .metadata_cache import MetadataCache, DocIndex, compute_sha256
 from .folder_matcher import (
     find_matching_company_folder,
@@ -36,6 +37,9 @@ from .repair import repair_cache
 __all__ = [
     # Document analysis
     'DocSorter',
+    
+    # File metadata
+    'FileMetadata',
     
     # Metadata cache
     'MetadataCache',
