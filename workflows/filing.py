@@ -10,6 +10,7 @@ from .docsorter import DocSorter
 from .file_metadata import FileMetadata
 from .metadata_cache import compute_sha256
 from .folder_matcher import resolve_company_folder
+from . import ingress_log
 
 
 def sanitize_filename(name: str) -> str:
@@ -117,6 +118,7 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
     
     if file_size == 0:
         PaperSort.print_right(f"Skipping empty file: {filename}")
+        ingress_log.log("ERROR", inbox_path or filename, None, filename, "Empty file")
         if cleanup_temp:
             os.unlink(pdf_path)
         return False
@@ -148,6 +150,7 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
                 inbox_path=inbox_path
             )
             if not extracted:
+                ingress_log.log("ERROR", inbox_path or filename, None, filename, "Analysis failed")
                 if cleanup_temp:
                     os.unlink(pdf_path)
                 return False
@@ -155,6 +158,7 @@ def process_file(pdf_path: str, cleanup_temp: bool = False,
             meta.display(PaperSort.print_right)
         except Exception as e:
             PaperSort.print_right(f"Error processing {filename}: {str(e)}")
+            ingress_log.log("ERROR", inbox_path or filename, None, filename, str(e))
             if cleanup_temp:
                 os.unlink(pdf_path)
             return False
@@ -191,6 +195,9 @@ def _handle_copy(pdf_path: str, meta: FileMetadata,
         True if file is successfully in docstore (copied, moved, or verified),
         False if copy/move failed.
     """
+    source = meta.src_uri_display or os.path.basename(pdf_path)
+    summary = f"{meta.title} {meta.reporting_year}" if meta.reporting_year else meta.title
+    
     # Resolve company folder names
     layout_tree = DocSorter._get_layout()
     resolved_path = resolve_company_folder(meta.suggested_path, layout_tree)
@@ -213,18 +220,22 @@ def _handle_copy(pdf_path: str, meta: FileMetadata,
             # File is in correct folder
             if not PaperSort.verify:
                 PaperSort.print_right("✓ Already in correct location (skipping)")
+                ingress_log.log("Skipped (duplicate)", source, current_dest_path, summary)
                 return True
             
             # Verify file exists
             if file_exists_in_docstore(current_dest_path):
                 PaperSort.print_right(f"✓ Verified: {current_dest_path}")
+                ingress_log.log("Skipped (duplicate)", source, current_dest_path, summary)
                 return True
             
             # File missing, re-copy
             PaperSort.print_right(f"! File missing at {current_dest_path}, re-copying...")
             if copy_to_docstore(pdf_path, current_dest_path):
                 PaperSort.print_right(f"✓ Re-copied to: {current_dest_path}")
+                ingress_log.log("Filed (re-copied)", source, current_dest_path, summary)
                 return True
+            ingress_log.log("ERROR", source, current_dest_path, summary, "Re-copy failed")
             return False
         
         # File in wrong folder - needs move
@@ -239,9 +250,11 @@ def _handle_copy(pdf_path: str, meta: FileMetadata,
                 dst_display = f"{docstore_display}/{new_dest_path}"
                 PaperSort.db.update_copied(meta.sha256, dst_uri, dst_display)
                 PaperSort.print_right(f"✓ Moved to: {new_dest_path}")
+                ingress_log.log("Filed (moved)", source, new_dest_path, summary)
                 return True
             else:
                 PaperSort.print_right("✗ Failed to move file")
+                ingress_log.log("ERROR", source, new_dest_path, summary, "Move failed")
                 return False
         else:
             # File missing, copy to new location
@@ -251,7 +264,9 @@ def _handle_copy(pdf_path: str, meta: FileMetadata,
                 dst_display = f"{docstore_display}/{new_dest_path}"
                 PaperSort.db.update_copied(meta.sha256, dst_uri, dst_display)
                 PaperSort.print_right(f"✓ Copied to: {new_dest_path}")
+                ingress_log.log("Filed (re-copied)", source, new_dest_path, summary)
                 return True
+            ingress_log.log("ERROR", source, new_dest_path, summary, "Copy failed")
             return False
     
     # File not yet copied - copy to resolved path
@@ -267,7 +282,9 @@ def _handle_copy(pdf_path: str, meta: FileMetadata,
             PaperSort.print_right(f"✓ Copied to: {base_dest}")
             if PaperSort.log:
                 _copy_to_incoming_log(pdf_path, meta.title, meta.reporting_year, meta.sha256)
+            ingress_log.log("Filed successfully", source, base_dest, summary)
             return True
+        ingress_log.log("ERROR", source, base_dest, summary, "Copy failed")
         return False
     
     # Check if hash name already exists
@@ -276,6 +293,7 @@ def _handle_copy(pdf_path: str, meta: FileMetadata,
         dst_display = f"{docstore_display}/{hash_dest}"
         PaperSort.db.update_copied(meta.sha256, dst_uri, dst_display)
         PaperSort.print_right(f"✓ Already exists: {hash_dest}")
+        ingress_log.log("Skipped (duplicate)", source, hash_dest, summary)
         return True
     
     # Name collision - use hash suffix
@@ -286,7 +304,9 @@ def _handle_copy(pdf_path: str, meta: FileMetadata,
         PaperSort.print_right(f"✓ Copied to: {hash_dest}")
         if PaperSort.log:
             _copy_to_incoming_log(pdf_path, meta.title, meta.reporting_year, meta.sha256)
+        ingress_log.log("Filed (renamed)", source, hash_dest, summary)
         return True
+    ingress_log.log("ERROR", source, hash_dest, summary, "Copy failed")
     return False
 
 
