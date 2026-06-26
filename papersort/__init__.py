@@ -28,7 +28,7 @@ class PaperSort:
     
     # Global resources
     docstore_driver: Optional["StorageDriver"] = None
-    llm_provider_name: str = "mistral"
+    llm_provider_name: str = "openai"
     db: Optional["MetadataCache"] = None
     
     # UI app reference (None = CLI mode)
@@ -46,7 +46,7 @@ class PaperSort:
         cls.copy = getattr(args, 'copy', False)
         cls.verify = getattr(args, 'verify', False)
         cls.log = getattr(args, 'log', False)
-        cls.llm_provider_name = os.environ.get('LLM_PROVIDER', 'mistral')
+        cls.llm_provider_name = os.environ.get('LLM_PROVIDER', 'openai')
         cls.docstore_driver = docstore_driver
     
     @classmethod

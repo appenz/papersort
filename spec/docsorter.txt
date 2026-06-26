@@ -41,7 +41,7 @@ Instance Fields (populated by sort()):
   - summary: str          Brief description (max 100 words)
 
 Methods:
-  sort(llm_provider="mistral") -> bool
+  sort(llm_provider="openai") -> bool
     Analyze document with LLM. Returns True on success.
     Uses models/ layer for LLM calls.
 

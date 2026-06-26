@@ -278,7 +278,7 @@ class DocSorter:
             
         return "\n".join(parts)
 
-    def sort(self, llm_provider: str = "mistral", inbox_path: str = "") -> bool:
+    def sort(self, llm_provider: str = "openai", inbox_path: str = "") -> bool:
         """Analyzes document and populates metadata fields.
         
         Args:
@@ -314,7 +314,7 @@ class DocSorter:
         return True
     
     @classmethod
-    def analyze(cls, file_path: str, llm_provider: str = "mistral",
+    def analyze(cls, file_path: str, llm_provider: str = "openai",
                 inbox_path: str = "") -> Optional[FileMetadata]:
         """Analyze a document and return FileMetadata.
         

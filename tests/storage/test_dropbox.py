@@ -4,7 +4,7 @@ These tests require:
 1. A dropbox_token.json file in project root
 
 Tests are skipped if credentials are not available.
-Only tests reading root folder since Dropbox driver is read-only.
+Tests avoid creating or deleting real Dropbox content.
 """
 
 import os
@@ -57,7 +57,9 @@ class TestDropboxSmoke:
         with pytest.raises(NotImplementedError):
             driver.upload("/tmp/test.txt", "test.txt")
     
-    def test_delete_raises_not_implemented(self, driver):
-        """Verify delete raises NotImplementedError."""
-        with pytest.raises(NotImplementedError):
-            driver.delete("test.txt")
+    def test_delete_missing_file_raises_storage_error(self, driver):
+        """Verify delete reports missing files as StorageError."""
+        from storage import StorageError
+
+        with pytest.raises(StorageError):
+            driver.delete("_papersort_missing_delete_test.txt")

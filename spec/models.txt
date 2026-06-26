@@ -61,15 +61,17 @@ Document analysis:
 OpenAILLM (models/openai.py)
 ----------------------------
 
-Uses OpenAI API via openai package.
+Uses OpenAI API via openai package and the Responses API.
 
 Configuration:
   - API key from OPENAI_API_KEY environment variable
-  - Model: gpt-4o (for document analysis with vision)
+  - Model: gpt-5.5 by default
+  - OPENAI_MODEL can override the default model
 
 Document analysis:
-  - Converts PDF pages to images
-  - Sends images with structured prompt
+  - Base64-encodes the PDF as an input_file
+  - OpenAI extracts both PDF text and page images into model context
+  - Sends the PDF with the structured prompt as input_text
   - Parses response into metadata dict
 
 

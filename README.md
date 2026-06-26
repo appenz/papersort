@@ -21,7 +21,7 @@ You specify the folder structure as a simple text document that looks like this:
 
 
 If you are lazy, you can ask an LLM to write the structure for you. Right now the software supports
-local files, Google Drive and Dropbox. For models, it supports OpenLLM and Mistral. Drivers for these
+local files, Google Drive and Dropbox. For models, it defaults to OpenAI GPT-5.5 and also supports Mistral. Drivers for these
 are modular and it's very easy to extend to other platforms.
 
 ## Quick Start
@@ -38,7 +38,8 @@ are modular and it's very easy to extend to other platforms.
 |----------|-------------|
 | `MISTRAL_API_KEY` | API key for Mistral AI |
 | `OPENAI_API_KEY` | API key for OpenAI |
-| `LLM_PROVIDER` | `openai` or `mistral` |
+| `LLM_PROVIDER` | `openai` or `mistral` (default: `openai`) |
+| `OPENAI_MODEL` | OpenAI model override (default: `gpt-5.5`) |
 | `INBOX` | Source: `gdrive:<folder-id>`, `local:<path>`, or `dropbox:<path>` |
 | `DOCSTORE` | Destination: `gdrive:<folder-id>`, `local:<path>`, or `dropbox:<path>` |
 

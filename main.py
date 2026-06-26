@@ -282,7 +282,7 @@ if __name__ == "__main__":
         else:
             docstore_driver, docstore_name = load_layout(docstore_uri)
             PaperSort.docstore_driver = docstore_driver
-            PaperSort.llm_provider_name = os.environ.get('LLM_PROVIDER', 'mistral')
+            PaperSort.llm_provider_name = os.environ.get('LLM_PROVIDER', 'openai')
             
             print(f"Docstore: {docstore_name}")
             print(f"Using LLM provider: {PaperSort.llm_provider_name}")

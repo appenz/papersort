@@ -1,13 +1,13 @@
 """LLM provider abstraction for papersort.
 
 Provides a uniform interface for LLM operations across different providers:
-- MistralLLM: Mistral AI (default)
-- OpenAILLM: OpenAI GPT-4
+- OpenAILLM: OpenAI GPT-5.5 (default)
+- MistralLLM: Mistral AI
 
 Usage:
     from models import create_llm
     
-    llm = create_llm("mistral")
+    llm = create_llm("openai")
     result = llm.analyze_document(pdf_path, layout_content)
     is_match = llm.compare_names("JPMorgan", "J.P. Morgan")
 """
@@ -17,7 +17,7 @@ from .mistral import MistralLLM
 from .openai import OpenAILLM
 
 
-def create_llm(provider: str = "mistral") -> LLM:
+def create_llm(provider: str = "openai") -> LLM:
     """Create an LLM instance for the specified provider.
     
     Args:

@@ -18,12 +18,15 @@ from .base import (
 )
 
 
+DEFAULT_OPENAI_MODEL = "gpt-5.5"
+
+
 class OpenAILLM(LLM):
     """OpenAI implementation for document analysis.
     
     Uses:
-    - gpt-5.1 for all tasks (document analysis with vision, name comparison)
-    - Base64 encoding for PDF documents
+    - GPT-5.5 via the Responses API for all tasks
+    - Base64-encoded PDF inputs for document analysis
     """
     
     def __init__(self) -> None:
@@ -32,6 +35,7 @@ class OpenAILLM(LLM):
         Uses OPENAI_API_KEY environment variable automatically.
         """
         self.client = OpenAI()
+        self.model = os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
     
     @property
     def name(self) -> str:
@@ -45,9 +49,10 @@ class OpenAILLM(LLM):
         inbox_path: str = "",
         path_validator: Optional[callable] = None
     ) -> Optional[DocumentAnalysis]:
-        """Analyze a PDF document using OpenAI's GPT-4 with vision.
+        """Analyze a PDF document using OpenAI's file input support.
         
-        Encodes the PDF as base64 and sends it to GPT-4o for analysis.
+        OpenAI extracts both text and page images from PDFs for vision-capable
+        models, preserving scanned and layout-sensitive content.
         """
         # Check file size
         try:
@@ -64,34 +69,16 @@ class OpenAILLM(LLM):
         except Exception as e:
             raise LLMError(f"Failed to read PDF file: {e}")
         
-        # Build the prompt
         prompt = self._build_analysis_prompt(layout, hint, inbox_path)
-        
-        # Build messages with base64-encoded PDF
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "file",
-                        "file": {
-                            "filename": os.path.basename(pdf_path),
-                            "file_data": f"data:application/pdf;base64,{base64_pdf}"
-                        }
-                    }
-                ]
-            }
-        ]
         
         # Try to get a valid response with retries
         for attempt in range(MAX_PATH_RETRIES):
             try:
-                response = self.client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=messages
+                response_text = self._create_pdf_response(
+                    pdf_path=pdf_path,
+                    base64_pdf=base64_pdf,
+                    prompt=prompt,
                 )
-                response_text = response.choices[0].message.content
             except Exception as e:
                 raise LLMError(f"OpenAI API error: {e}")
             
@@ -110,8 +97,6 @@ class OpenAILLM(LLM):
             print(f"Invalid path '{result_dict['SUGGESTED_PATH']}', "
                   f"asking LLM to retry ({attempt + 1}/{MAX_PATH_RETRIES})...")
             
-            messages.append({"role": "assistant", "content": response_text})
-            
             # Build specific feedback based on the invalid path
             feedback = "This is incorrect, the path that you suggested is not valid. "
             suggested = result_dict['SUGGESTED_PATH']
@@ -122,11 +107,10 @@ class OpenAILLM(LLM):
             else:
                 feedback += "The path structure must match the layout. Where the layout shows 'By company', use the actual company/entity name. Where it shows 'By year', use the actual year. You may create new company or year folders as needed."
             feedback += " Try again."
-            
-            messages.append({
-                "role": "user",
-                "content": feedback
-            })
+            prompt = (
+                f"{prompt}\n---\nPrevious invalid response:\n{response_text}"
+                f"\n---\nCorrection:\n{feedback}"
+            )
         
         print(f"Failed to get valid path after {MAX_PATH_RETRIES} attempts, routing to Other.")
         return self._create_fallback_analysis(pdf_path)
@@ -136,11 +120,7 @@ class OpenAILLM(LLM):
         prompt = COMPARE_NAMES_PROMPT.format(name1=name1, name2=name2)
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-5.1",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            result = response.choices[0].message.content.strip().upper()
+            result = self._create_text_response(prompt).strip().upper()
             return result == "MATCH"
         except Exception as e:
             print(f"Warning: Name comparison failed: {e}")
@@ -158,11 +138,7 @@ class OpenAILLM(LLM):
         prompt = DUPLICATE_DETECTION_PROMPT + "\n".join(f"- {name}" for name in names)
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            response_text = response.choices[0].message.content
+            response_text = self._create_text_response(prompt)
             return self._parse_duplicate_response(response_text, names)
         except Exception as e:
             print(f"Warning: Duplicate detection failed: {e}")
@@ -185,15 +161,58 @@ class OpenAILLM(LLM):
         )
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            response_text = response.choices[0].message.content
+            response_text = self._create_text_response(prompt)
             return self._parse_folder_match_response(response_text, existing_folders)
         except Exception as e:
             print(f"Warning: Folder matching failed: {e}")
             return None
+    
+    def _create_text_response(self, prompt: str) -> str:
+        """Send a text-only prompt through the Responses API."""
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt}
+                    ],
+                }
+            ],
+        )
+        return self._extract_response_text(response)
+    
+    def _create_pdf_response(
+        self,
+        pdf_path: str,
+        base64_pdf: str,
+        prompt: str,
+    ) -> str:
+        """Send a PDF and prompt through the Responses API."""
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_file",
+                            "filename": os.path.basename(pdf_path),
+                            "file_data": f"data:application/pdf;base64,{base64_pdf}",
+                        },
+                        {"type": "input_text", "text": prompt},
+                    ],
+                }
+            ],
+        )
+        return self._extract_response_text(response)
+    
+    def _extract_response_text(self, response: object) -> str:
+        """Return text from an OpenAI Responses API response."""
+        response_text = getattr(response, "output_text", None)
+        if not response_text:
+            raise LLMError("OpenAI response did not contain output_text")
+        return response_text
     
     def _create_fallback_analysis(self, pdf_path: str) -> DocumentAnalysis:
         """Create a fallback analysis for documents that can't be classified.

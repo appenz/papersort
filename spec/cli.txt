@@ -75,8 +75,11 @@ INBOX (optional)
     INBOX=dropbox:/Inbox
 
 LLM_PROVIDER (optional)
-  LLM provider for document analysis. Default: "mistral"
-  Options: "mistral", "openai"
+  LLM provider for document analysis. Default: "openai"
+  Options: "openai", "mistral"
+
+OPENAI_MODEL (optional)
+  OpenAI model to use when LLM_PROVIDER=openai. Default: "gpt-5.5"
 
 MISTRAL_API_KEY (required if using Mistral)
   API key for Mistral AI.
